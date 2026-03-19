@@ -1090,6 +1090,16 @@ function initViewer3D(containerId) {
     });
   }
 
+  // Grid overlay toggle
+  const toggleGridBtn = document.getElementById('toggleGridBtn');
+  const gridOverlay = document.getElementById('viewerGridOverlay');
+  if (toggleGridBtn && gridOverlay) {
+    toggleGridBtn.addEventListener('click', () => {
+      gridOverlay.classList.toggle('active');
+      toggleGridBtn.classList.toggle('active', gridOverlay.classList.contains('active'));
+    });
+  }
+
   // FDM Layer Height slider
   const fdmLayerHeightSlider = document.getElementById('fdmLayerHeightSlider');
   const fdmLayerHeightValue = document.getElementById('fdmLayerHeightValue');
