@@ -36,7 +36,7 @@ function initGcodeAnalyzer() {
 
   function loadGcodeFile(file) {
     fileName.textContent = file.name;
-    fileStats.textContent = `${(file.size / 1024 / 1024).toFixed(2)} MB`;
+    fileStats.textContent = `${(file.size / 1024 / 1024).toFixed(2).replace('.', ',')} MB`;
     fileInfo.classList.add('show');
     resultsSection.style.display = 'none';
 
@@ -202,7 +202,7 @@ function initGcodeAnalyzer() {
 
     // Dimensions
     if (stats.sizeX !== undefined) {
-      setStatValue('statDimensions', `${stats.sizeX} × ${stats.sizeY} × ${stats.sizeZ}`, 'mm');
+      setStatValue('statDimensions', `${fmtNum(stats.sizeX)} × ${fmtNum(stats.sizeY)} × ${fmtNum(stats.sizeZ)}`, 'mm');
     } else {
       setStatValue('statDimensions', null);
     }
@@ -239,11 +239,11 @@ function initGcodeAnalyzer() {
 
     // Waste stats
     setStatValue('statTotalWaste', stats.totalWasteWeightG
-      ? `${stats.totalWasteWeightG} g (${stats.totalWasteVolumeCm3} cm³)` : null);
+      ? `${fmtNum(stats.totalWasteWeightG)} g (${fmtNum(stats.totalWasteVolumeCm3)} cm³)` : null);
     setStatValue('statFlushWaste', stats.flushWeightG
-      ? `${stats.flushWeightG} g (${stats.flushVolumeCm3} cm³)` : null);
+      ? `${fmtNum(stats.flushWeightG)} g (${fmtNum(stats.flushVolumeCm3)} cm³)` : null);
     setStatValue('statTowerWaste', stats.wipeTowerWeightG
-      ? `${stats.wipeTowerWeightG} g (${stats.wipeTowerVolumeCm3} cm³)` : null);
+      ? `${fmtNum(stats.wipeTowerWeightG)} g (${fmtNum(stats.wipeTowerVolumeCm3)} cm³)` : null);
     setStatValue('statFlushCount', stats.flushCount > 0 ? stats.flushCount : null);
     setStatValue('statFlushMultiplier', stats.flushMultiplier);
     setStatValue('statFlushIntoInfill', formatBool(stats.flushIntoInfill));
@@ -263,8 +263,8 @@ function initGcodeAnalyzer() {
         tr.innerHTML = `
           <td>${f.index + 1}</td>
           <td>${colorSwatch}${f.type || '—'}</td>
-          <td>${f.usedG != null ? f.usedG.toFixed(2) + ' g' : '—'}</td>
-          <td>${f.usedMm != null ? (f.usedMm / 1000).toFixed(2) + ' m' : '—'}</td>
+          <td>${f.usedG != null ? f.usedG.toFixed(2).replace('.', ',') + ' g' : '—'}</td>
+          <td>${f.usedMm != null ? (f.usedMm / 1000).toFixed(2).replace('.', ',') + ' m' : '—'}</td>
         `;
         filamentsBody.appendChild(tr);
       });
@@ -303,6 +303,12 @@ function initGcodeAnalyzer() {
     });
   }
 
+  // Replace decimal dots with commas for French number formatting
+  function fmtNum(val) {
+    if (val == null) return val;
+    return String(val).replace(/(\d)\.(\d)/g, '$1,$2');
+  }
+
   function setStatValue(id, value, unit) {
     const el = document.getElementById(id);
     if (!el) return;
@@ -311,15 +317,16 @@ function initGcodeAnalyzer() {
       return;
     }
     el.closest('.gcode-stat-item').style.display = '';
-    el.textContent = unit ? `${value} ${unit}` : `${value}`;
+    const display = fmtNum(value);
+    el.textContent = unit ? `${display} ${unit}` : `${display}`;
   }
 
   function formatFilamentMm(val) {
     if (!val) return null;
     const num = parseFloat(val);
     if (isNaN(num)) return val;
-    if (num > 1000) return (num / 1000).toFixed(2) + ' m';
-    return num.toFixed(1) + ' mm';
+    if (num > 1000) return (num / 1000).toFixed(2).replace('.', ',') + ' m';
+    return num.toFixed(1).replace('.', ',') + ' mm';
   }
 
   function formatTemp(val) {

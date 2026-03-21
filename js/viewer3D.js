@@ -1090,6 +1090,64 @@ function initViewer3D(containerId) {
     });
   }
 
+  // Zoom fit button — reposition camera at fit distance keeping current orientation
+  const zoomFitBtn = document.getElementById('zoomFitBtn');
+  if (zoomFitBtn) {
+    zoomFitBtn.addEventListener('click', () => {
+      if (!viewer3D.mesh || !viewer3D.camera || !viewer3D.controls) return;
+      const cam = viewer3D.camera;
+      const box = new THREE.Box3().setFromObject(viewer3D.mesh);
+      const center = box.getCenter(new THREE.Vector3());
+
+      // Get the 8 corners of the bounding box
+      const corners = [
+        new THREE.Vector3(box.min.x, box.min.y, box.min.z),
+        new THREE.Vector3(box.min.x, box.min.y, box.max.z),
+        new THREE.Vector3(box.min.x, box.max.y, box.min.z),
+        new THREE.Vector3(box.min.x, box.max.y, box.max.z),
+        new THREE.Vector3(box.max.x, box.min.y, box.min.z),
+        new THREE.Vector3(box.max.x, box.min.y, box.max.z),
+        new THREE.Vector3(box.max.x, box.max.y, box.min.z),
+        new THREE.Vector3(box.max.x, box.max.y, box.max.z),
+      ];
+
+      // Current camera direction
+      const direction = new THREE.Vector3().subVectors(cam.position, viewer3D.controls.target).normalize();
+
+      // Place camera temporarily at a known distance to measure projected size
+      const tempDist = cam.position.distanceTo(viewer3D.controls.target);
+      const tempPos = new THREE.Vector3().copy(center).addScaledVector(direction, tempDist);
+      cam.position.copy(tempPos);
+      viewer3D.controls.target.copy(center);
+      cam.lookAt(center);
+      cam.updateMatrixWorld();
+
+      // Project all corners to NDC (-1 to 1) and find the bounding rect
+      let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+      for (const c of corners) {
+        const ndc = c.clone().project(cam);
+        minX = Math.min(minX, ndc.x);
+        maxX = Math.max(maxX, ndc.x);
+        minY = Math.min(minY, ndc.y);
+        maxY = Math.max(maxY, ndc.y);
+      }
+
+      // Current object size in NDC space (range is -1 to 1, so full viewport = 2)
+      const ndcW = maxX - minX;
+      const ndcH = maxY - minY;
+      const currentFill = Math.max(ndcW, ndcH) / 2; // fraction of viewport (0-1)
+
+      // We want it to fill exactly 3/4, so scale the distance
+      const targetFill = 0.75;
+      const newDist = tempDist * (currentFill / targetFill);
+
+      cam.position.copy(center).addScaledVector(direction, newDist);
+      cam.lookAt(center);
+      viewer3D.controls.update();
+      saveCameraStateDebounced();
+    });
+  }
+
   // Grid overlay toggle
   const toggleGridBtn = document.getElementById('toggleGridBtn');
   const gridOverlay = document.getElementById('viewerGridOverlay');
