@@ -57,7 +57,7 @@ self.onmessage = (ev) => {
   }
 };
 
-async function handleBuild({ jobs, loops, endGcode, cooldown, baseBuffer }) {
+async function handleBuild({ jobs, loops, endGcode, cooldown, baseBuffer, preEndMin, preEndCode }) {
   self.postMessage({ type: 'progress', message: 'Reading base archive...' });
 
   const baseZip = await JSZip.loadAsync(baseBuffer);
@@ -105,6 +105,15 @@ async function handleBuild({ jobs, loops, endGcode, cooldown, baseBuffer }) {
       const isVeryLast = loop === lastLoopIdx && i === lastJobIdx;
 
       let content = replaceExtrudeCaliSection(job.gcodeContent, EXTRUDE_CALI_REPLACEMENT);
+      if (preEndCode && preEndMin > 0) {
+        content = injectBeforeEnd(content, preEndMin, preEndCode, {
+          jobName: job.name,
+          loopIdx: loop + 1,
+          totalLoops: loops,
+          printIdx: i + 1,
+          totalPrints: jobs.length,
+        });
+      }
       if (!isVeryLast) content = stripPrintEnd(content);
 
       chunks.push(`\n; ==== loop ${loop + 1}/${loops} — print ${i + 1}/${jobs.length}: ${job.name} ====\n`);
@@ -195,6 +204,86 @@ function stripPrintEnd(gcode) {
   const m = gcode.match(PRINT_END_TRIGGER);
   if (!m) return gcode;
   return gcode.slice(0, m.index + m[0].length);
+}
+
+// Insert a G-code snippet `secondsBeforeEnd` seconds before the end of the
+// print. Uses Bambu/Marlin `M73 P<percent> R<minutes>` progress markers to
+// locate the insertion point. If the print is shorter than `secondsBeforeEnd`
+// (or has no M73 markers), inserts at the very start of the gcode.
+//
+// The first M73 in the file has the largest R value (≈ total print time);
+// each subsequent M73 has a smaller R. We pick the first M73 whose remaining
+// time (R × 60) falls below the threshold — that's the entry into the
+// "last N seconds" zone.
+// Insert a G-code snippet right AFTER the M73 progress marker whose
+// remaining-time `R` (in minutes) is closest to `minutesBeforeEnd`.
+// If the total print time is below the trigger window, or if there are no
+// M73 markers at all, fall back to injecting at the very start of the gcode.
+function injectBeforeEnd(gcode, minutesBeforeEnd, snippet, ctx) {
+  // Match the progress-marker M73 only (followed by a space).
+  // The Bambu firmware also emits `M73.2 R1.0 ;Reset left time magnitude`
+  // which is a SPEED/TIME RESET command — its R value is unrelated to
+  // remaining time and would skew the "closest" match.
+  const re = /^M73\s[^\n]*\bR(\d+(?:\.\d+)?)/gm;
+  const matches = [];
+  let m;
+  while ((m = re.exec(gcode)) !== null) {
+    matches.push({ index: m.index, line: m[0], remainingMin: parseFloat(m[1]) });
+  }
+
+  const body = snippet.endsWith('\n') ? snippet : snippet + '\n';
+  const block = `; ==== pre-end trigger (${minutesBeforeEnd} min before end) ====\n${body}`;
+  const startBlock = '\n' + block;
+  const tag = ctx
+    ? `[pre-end ${ctx.loopIdx}/${ctx.totalLoops}·${ctx.printIdx}/${ctx.totalPrints} ${ctx.jobName}]`
+    : '[pre-end]';
+
+  if (matches.length === 0) {
+    console.log(`${tag} no M73 R markers found in gcode → injecting at the very start`);
+    return startBlock + gcode;
+  }
+
+  const totalRemainMin = matches[0].remainingMin;
+  const lastM73 = matches[matches.length - 1];
+
+  console.log(
+    `${tag} found ${matches.length} M73 markers. ` +
+    `Total print duration ≈ ${totalRemainMin} min. ` +
+    `First: "${matches[0].line}"  ·  Last: "${lastM73.line}"`
+  );
+
+  if (totalRemainMin <= minutesBeforeEnd) {
+    console.log(
+      `${tag} print is shorter than the trigger window ` +
+      `(${totalRemainMin} min ≤ ${minutesBeforeEnd} min) → injecting at the very start`
+    );
+    return startBlock + gcode;
+  }
+
+  // Pick the M73 whose R is closest to the requested minutes-before-end.
+  // Ties go to the earliest match (more conservative: fire slightly early
+  // rather than slightly late).
+  let bestIdx = 0;
+  let bestDist = Math.abs(matches[0].remainingMin - minutesBeforeEnd);
+  for (let k = 1; k < matches.length; k++) {
+    const d = Math.abs(matches[k].remainingMin - minutesBeforeEnd);
+    if (d < bestDist) {
+      bestIdx = k;
+      bestDist = d;
+    }
+  }
+  const target = matches[bestIdx];
+
+  // Insert right AFTER the chosen M73 line (after its terminating newline).
+  const lineEnd = gcode.indexOf('\n', target.index);
+  const insertAt = lineEnd >= 0 ? lineEnd + 1 : gcode.length;
+
+  console.log(
+    `${tag} injecting after marker #${bestIdx + 1}/${matches.length}: ` +
+    `"${target.line}" (R = ${target.remainingMin} min, |R − ${minutesBeforeEnd}| = ${bestDist})`
+  );
+
+  return gcode.slice(0, insertAt) + block + gcode.slice(insertAt);
 }
 
 function replaceMetadataValue(xml, key, newValue) {

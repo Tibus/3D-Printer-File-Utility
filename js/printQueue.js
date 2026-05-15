@@ -4,6 +4,8 @@
 
 const END_GCODE_STORAGE_KEY = 'printQueue.endGcode';
 const COOLDOWN_STORAGE_KEY = 'printQueue.cooldownBetweenLoops';
+const PREEND_MINUTES_STORAGE_KEY = 'printQueue.preEndMinutes';
+const PREEND_SNIPPET_STORAGE_KEY = 'printQueue.preEndSnippet';
 
 // G-code transformation constants (EXTRUDE_CALI_*, PRINT_END_TRIGGER) live in
 // js/printQueueWorker.js — the heavy lifting runs there off the main thread.
@@ -77,6 +79,9 @@ function initPrintQueue(monaco) {
   const resetEndGcodeBtn = document.getElementById('resetEndGcodeBtn');
   const findEndGcodeBtn = document.getElementById('findEndGcodeBtn');
   const replaceEndGcodeBtn = document.getElementById('replaceEndGcodeBtn');
+  const preEndCard = document.getElementById('preEndCard');
+  const preEndMinutes = document.getElementById('preEndMinutes');
+  const preEndSnippet = document.getElementById('preEndSnippet');
   const loopCard = document.getElementById('loopCard');
   const loopCount = document.getElementById('loopCount');
   const cooldownInput = document.getElementById('cooldownBetweenLoops');
@@ -153,6 +158,12 @@ function initPrintQueue(monaco) {
     saveCooldown(cooldownInput.value);
     updateSummary();
   });
+
+  // Restore + persist pre-end trigger settings
+  preEndMinutes.value = loadPreEndMinutes();
+  preEndSnippet.value = loadPreEndSnippet();
+  preEndMinutes.addEventListener('input', () => savePreEndMinutes(preEndMinutes.value));
+  preEndSnippet.addEventListener('input', () => savePreEndSnippet(preEndSnippet.value));
 
   loopCount.addEventListener('input', updateSummary);
 
@@ -300,6 +311,7 @@ function initPrintQueue(monaco) {
     const hasJobs = queue.length > 0;
     queueCard.style.display = hasJobs ? '' : 'none';
     endGcodeCard.style.display = hasJobs ? '' : 'none';
+    preEndCard.style.display = hasJobs ? '' : 'none';
     loopCard.style.display = hasJobs ? '' : 'none';
     exportCard.style.display = hasJobs ? '' : 'none';
 
@@ -475,6 +487,8 @@ function initPrintQueue(monaco) {
     const loops = Math.max(1, parseInt(loopCount.value) || 1);
     const cooldown = Math.max(0, parseInt(cooldownInput.value) || 0);
     const endGcode = endGcodeEditor.getValue() || '';
+    const preEndMin = Math.max(0, parseFloat(preEndMinutes.value) || 0);
+    const preEndCode = (preEndSnippet.value || '').trim();
 
     const baseName = (outputName.value || 'print-queue').replace(/\.gcode\.3mf$|\.3mf$/i, '');
     const filename = `${baseName}.gcode.3mf`;
@@ -499,7 +513,7 @@ function initPrintQueue(monaco) {
 
     showExportToast('Spawning export worker...', 0);
     try {
-      await runExportInWorker({ filename, fileHandle, loops, cooldown, endGcode });
+      await runExportInWorker({ filename, fileHandle, loops, cooldown, endGcode, preEndMin, preEndCode });
       finishExportToast('success', 'Export complete', filename);
     } catch (err) {
       console.error(err);
@@ -509,7 +523,7 @@ function initPrintQueue(monaco) {
 
   // Spin up the export worker, stream chunks back, write them to disk (or
   // accumulate in a Blob for fallback download), and display a live ETA.
-  function runExportInWorker({ filename, fileHandle, loops, cooldown, endGcode }) {
+  function runExportInWorker({ filename, fileHandle, loops, cooldown, endGcode, preEndMin, preEndCode }) {
     return new Promise((resolve, reject) => {
       const worker = new Worker('js/printQueueWorker.js');
       let writable = null;
@@ -630,6 +644,8 @@ function initPrintQueue(monaco) {
           loops,
           cooldown,
           endGcode,
+          preEndMin,
+          preEndCode,
         });
       }, reject);
     });
@@ -687,5 +703,36 @@ function loadCooldown() {
 function saveCooldown(value) {
   try {
     localStorage.setItem(COOLDOWN_STORAGE_KEY, String(parseInt(value) || 0));
+  } catch (_) {}
+}
+
+function loadPreEndMinutes() {
+  try {
+    const stored = localStorage.getItem(PREEND_MINUTES_STORAGE_KEY);
+    if (stored !== null) {
+      const n = parseFloat(stored);
+      if (!isNaN(n) && n >= 0) return n;
+    }
+  } catch (_) {}
+  return 1;
+}
+
+function savePreEndMinutes(value) {
+  try {
+    localStorage.setItem(PREEND_MINUTES_STORAGE_KEY, String(parseFloat(value) || 0));
+  } catch (_) {}
+}
+
+function loadPreEndSnippet() {
+  try {
+    const stored = localStorage.getItem(PREEND_SNIPPET_STORAGE_KEY);
+    if (stored !== null) return stored;
+  } catch (_) {}
+  return '';
+}
+
+function savePreEndSnippet(value) {
+  try {
+    localStorage.setItem(PREEND_SNIPPET_STORAGE_KEY, value || '');
   } catch (_) {}
 }

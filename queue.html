@@ -72,6 +72,28 @@
       </div>
     </div>
 
+    <!-- Pre-end trigger -->
+    <div class="card" id="preEndCard" style="display: none;">
+      <h2>Pre-end trigger</h2>
+      <p class="param-help" style="margin-bottom: var(--space-sm);">
+        Inserts a G-code snippet right after the <code>M73</code> progress marker
+        closest to N minutes before the end of each print.
+        Falls back to the start of the print if it's shorter than N minutes.
+      </p>
+      <div class="params-grid" style="margin-bottom: var(--space-sm);">
+        <div class="param-group">
+          <label for="preEndMinutes">Minutes before end</label>
+          <input type="number" id="preEndMinutes" min="0" max="600" value="1" step="1">
+        </div>
+        <div class="param-group">
+          <label for="preEndSnippet">G-code to inject (leave empty to disable)</label>
+          <textarea id="preEndSnippet" class="text-input" rows="3"
+            spellcheck="false"
+            placeholder="; e.g. trigger external bell&#10;M42 P1 S255&#10;G4 S1&#10;M42 P1 S0"></textarea>
+        </div>
+      </div>
+    </div>
+
     <!-- Loop count + Summary -->
     <div class="card" id="loopCard" style="display: none;">
       <h2>Loops & Summary</h2>
