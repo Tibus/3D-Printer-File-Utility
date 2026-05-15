@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>3MF Repair - 3D Printer File Utility</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body data-page="repair">
+  <div class="container">
+    <header>
+      <a href="index.html" class="back-link">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M19 12H5M12 19l-7-7 7-7"/>
+        </svg>
+        Back
+      </a>
+      <h1>3MF <span class="accent">Repair</span></h1>
+      <p class="subtitle">Repair broken or truncated 3MF files for Bambu Studio</p>
+    </header>
+
+    <!-- File Upload -->
+    <div class="card">
+      <h2>Upload</h2>
+      <div class="file-drop-zone" id="dropZone">
+        <div class="icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+            <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M17 8l-5-5-5 5M12 3v12"/>
+          </svg>
+        </div>
+        <div class="text">Drop your broken .3mf file here or <strong>click to browse</strong></div>
+        <div class="supported-formats">.3mf</div>
+        <input type="file" id="fileInput" accept=".3mf">
+      </div>
+      <div class="file-info" id="fileInfo">
+        <strong id="fileName"></strong><br>
+        <span id="fileStats"></span>
+      </div>
+    </div>
+
+    <!-- Analysis Results -->
+    <div id="analysisSection" style="display: none;">
+      <div class="card">
+        <h2>Analysis</h2>
+        <div id="analysisLog" class="repair-log"></div>
+      </div>
+
+      <div class="card" id="objectsCard" style="display: none;">
+        <h2>Objects Found</h2>
+        <div class="gcode-table-wrapper">
+          <table class="gcode-table">
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>Object ID</th>
+                <th>Vertices</th>
+                <th>Triangles</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody id="objectsBody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="card" id="repairActions" style="display: none;">
+        <h2>Repair</h2>
+        <p id="repairSummary" class="repair-summary"></p>
+        <button class="btn-primary" id="repairBtn">Repair & Download</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Loader Overlay -->
+  <div class="loader-overlay" id="loaderOverlay">
+    <div class="loader-content">
+      <div class="loader-spinner"></div>
+      <div class="loader-text" id="loaderText">Loading...</div>
+    </div>
+  </div>
+
+  <!-- Scripts -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+  <script src="js/ui.js"></script>
+  <script src="js/3mfRepair.js"></script>
+  <script>
+    document.addEventListener('DOMContentLoaded', init3mfRepair);
+  </script>
+</body>
+</html>

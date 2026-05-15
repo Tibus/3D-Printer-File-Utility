@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Print Queue - 3D Printer File Utility</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body data-page="queue">
+  <div class="container">
+    <header>
+      <a href="index.html" class="back-link">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M19 12H5M12 19l-7-7 7-7"/>
+        </svg>
+        Back
+      </a>
+      <h1>Print <span class="accent">Queue</span></h1>
+      <p class="subtitle">Concatenate multiple G-codes for farm-loop printing</p>
+    </header>
+
+    <!-- File Upload -->
+    <div class="card">
+      <h2>Add G-codes</h2>
+      <div class="file-drop-zone" id="dropZone">
+        <div class="icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+            <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M17 8l-5-5-5 5M12 3v12"/>
+          </svg>
+        </div>
+        <div class="text">Drop G-code <strong>.3mf</strong> files here or <strong>click to browse</strong></div>
+        <div class="supported-formats">Multiple files supported · drag to reorder below</div>
+        <input type="file" id="fileInput" accept=".3mf" multiple>
+      </div>
+    </div>
+
+    <!-- Queue List -->
+    <div class="card" id="queueCard" style="display: none;">
+      <h2>Queue (<span id="queueCount">0</span>)</h2>
+      <div class="queue-list" id="queueList"></div>
+    </div>
+
+    <!-- End-of-Print G-code -->
+    <div class="card" id="endGcodeCard" style="display: none;">
+      <div class="end-gcode-header">
+        <h2 style="margin-bottom: 0;">End-of-Print G-code (between each print)</h2>
+        <div class="end-gcode-toolbar">
+          <button type="button" class="btn-secondary" id="findEndGcodeBtn" title="Find (Ctrl+F)">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/>
+            </svg>
+            Find
+          </button>
+          <button type="button" class="btn-secondary" id="replaceEndGcodeBtn" title="Replace (Ctrl+H)">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M14 4l4 4-4 4M18 8H8a4 4 0 00-4 4v8"/>
+            </svg>
+            Replace
+          </button>
+        </div>
+      </div>
+      <p class="param-help" style="margin: var(--space-sm) 0;">
+        Inserted after every print to eject the part before the next one starts.
+        <kbd>Ctrl+Space</kbd> autocomplete · <kbd>Ctrl+F</kbd> find · <kbd>Ctrl+H</kbd> replace · <kbd>Ctrl+/</kbd> comment
+      </p>
+      <div id="endGcodeEditor" class="end-gcode-editor"></div>
+      <div class="end-gcode-actions">
+        <button type="button" class="btn-secondary" id="resetEndGcodeBtn">Reset to default</button>
+      </div>
+    </div>
+
+    <!-- Loop count + Summary -->
+    <div class="card" id="loopCard" style="display: none;">
+      <h2>Loops & Summary</h2>
+      <div class="params-grid">
+        <div class="param-group">
+          <label for="loopCount">Number of loops</label>
+          <input type="number" id="loopCount" min="1" max="999" value="1" step="1">
+          <span class="param-help">Total prints = queue size × loops</span>
+        </div>
+        <div class="param-group">
+          <label for="cooldownBetweenLoops">Cooldown between loops (s)</label>
+          <input type="number" id="cooldownBetweenLoops" min="0" max="86400" value="60" step="10">
+          <span class="param-help">Added to the total time estimate only</span>
+        </div>
+        <div class="param-group">
+          <label>Total prints</label>
+          <div class="summary-value" id="totalPrints">—</div>
+        </div>
+        <div class="param-group">
+          <label>Total time (estimated)</label>
+          <div class="summary-value" id="totalTime">—</div>
+        </div>
+        <div class="param-group">
+          <label>Total filament (estimated)</label>
+          <div class="summary-value" id="totalFilament">—</div>
+        </div>
+        <div class="param-group">
+          <label>Output file size (estimated)</label>
+          <div class="summary-value" id="totalSize">—</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Export -->
+    <div class="card" id="exportCard" style="display: none;">
+      <h2>Export</h2>
+      <div class="param-group" style="margin-bottom: var(--space-md);">
+        <label for="outputName">Output filename</label>
+        <input type="text" id="outputName" value="print-queue" class="text-input">
+      </div>
+      <button type="button" class="btn-download" id="exportBtn">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"/>
+        </svg>
+        Generate .gcode.3mf
+      </button>
+    </div>
+  </div>
+
+  <!-- Loader Overlay -->
+  <div class="loader-overlay" id="loaderOverlay">
+    <div class="loader-content">
+      <div class="loader-spinner"></div>
+      <div class="loader-text" id="loaderText">Loading...</div>
+    </div>
+  </div>
+
+  <!-- Scripts -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.52.2/min/vs/loader.min.js"></script>
+  <script src="js/ui.js"></script>
+  <script src="js/gcodeParser.js"></script>
+  <script src="js/gcodeLanguage.js"></script>
+  <script src="js/printQueue.js"></script>
+  <script>
+    require.config({
+      paths: { vs: 'https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.52.2/min/vs' }
+    });
+    require(['vs/editor/editor.main'], () => {
+      registerGcodeLanguage(monaco);
+      const start = () => initPrintQueue(monaco);
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', start, { once: true });
+      } else {
+        start();
+      }
+    });
+  </script>
+</body>
+</html>

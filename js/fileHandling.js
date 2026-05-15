@@ -18,6 +18,17 @@ function getFileType(filename) {
   return null;
 }
 
+function showViewerPngExport(baseName) {
+  const pngBtn = document.getElementById('exportPreviewPngBtn');
+  if (!pngBtn) return;
+  pngBtn.style.display = 'flex';
+  pngBtn.onclick = () => exportViewerPNG(baseName);
+}
+
+function stripExt(filename) {
+  return filename.replace(/\.[^.]+$/, '');
+}
+
 function initFileHandling() {
   elements.dropZone.addEventListener('click', () => elements.fileInput.click());
 
@@ -115,6 +126,7 @@ function handleFile(file) {
         };
         if (page === 'viewer' || page === 'decimator') {
           loadModelToViewer(parsed.vertices, parsed.faces);
+          showViewerPngExport(stripExt(file.name));
         } else {
           loadModelToProcessViewer(parsed.vertices, parsed.faces);
           initColorPicker();
@@ -145,6 +157,7 @@ function handleFile(file) {
           };
           if (page === 'viewer' || page === 'decimator') {
             loadModelToViewer(parsed.vertices, parsed.faces);
+            showViewerPngExport(stripExt(file.name));
           } else {
             loadModelToProcessViewer(parsed.vertices, parsed.faces);
             initColorPicker();
@@ -181,6 +194,7 @@ function handleFile(file) {
             };
             if (page === 'viewer' || page === 'decimator') {
               loadModelToViewer(parsed.vertices, parsed.faces);
+              showViewerPngExport(stripExt(file.name));
             } else {
               loadModelToProcessViewer(parsed.vertices, parsed.faces);
               initColorPicker();
