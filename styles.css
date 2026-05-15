@@ -1830,3 +1830,123 @@ h1 .accent {
     height: 60px;
   }
 }
+
+/* ── Export toast (non-blocking progress) ──────────────────────────────── */
+.export-toast {
+  position: fixed;
+  bottom: var(--space-lg);
+  right: var(--space-lg);
+  width: 360px;
+  max-width: calc(100vw - var(--space-xl));
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+  padding: var(--space-md);
+  box-shadow: var(--shadow-lg);
+  z-index: 1000;
+  transform: translateY(120%);
+  opacity: 0;
+  pointer-events: none;
+  transition: transform var(--transition-slow), opacity var(--transition-slow);
+}
+
+.export-toast.show {
+  transform: translateY(0);
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.export-toast.success {
+  border-color: var(--success);
+}
+
+.export-toast.error {
+  border-color: var(--error);
+}
+
+.export-toast-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  margin-bottom: var(--space-sm);
+}
+
+.export-toast-title {
+  flex: 1;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.export-toast-spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--border-default);
+  border-top-color: var(--accent-primary);
+  border-radius: 50%;
+  animation: export-toast-spin 0.7s linear infinite;
+  flex-shrink: 0;
+}
+
+.export-toast.success .export-toast-spinner {
+  border: 2px solid var(--success);
+  animation: none;
+  background: var(--success);
+}
+
+.export-toast.error .export-toast-spinner {
+  border: 2px solid var(--error);
+  animation: none;
+  background: var(--error);
+}
+
+@keyframes export-toast-spin {
+  to { transform: rotate(360deg); }
+}
+
+.export-toast-close {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  font-size: 1.4rem;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 4px;
+  transition: color var(--transition-fast);
+}
+
+.export-toast-close:hover {
+  color: var(--error);
+}
+
+.export-toast-message {
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+  font-family: "Cascadia Code", "Fira Code", monospace;
+  margin-bottom: var(--space-sm);
+  overflow-wrap: anywhere;
+}
+
+.export-toast-bar {
+  height: 4px;
+  background: var(--bg-secondary);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.export-toast-bar-fill {
+  height: 100%;
+  width: 0%;
+  background: var(--accent-primary);
+  border-radius: 2px;
+  transition: width var(--transition-fast), background-color var(--transition-base);
+}
+
+.export-toast.success .export-toast-bar-fill {
+  background: var(--success);
+}
+
+.export-toast.error .export-toast-bar-fill {
+  background: var(--error);
+}

@@ -5,35 +5,8 @@
 const END_GCODE_STORAGE_KEY = 'printQueue.endGcode';
 const COOLDOWN_STORAGE_KEY = 'printQueue.cooldownBetweenLoops';
 
-// Bambu cali block: replace per-job so the farm loop doesn't recalibrate
-// every print. The original section sits between `;===== extrude cali test ==`
-// and the next major section header.
-// Anchored at line start so we don't match the same text inside the
-// `; machine_start_gcode = ...\n;===== extrude cali test ==\n...` template
-// comment (which contains escaped \n, not real line breaks).
-const EXTRUDE_CALI_MARKER = /^;===== extrude cali test =+/gm;
-const EXTRUDE_CALI_REPLACEMENT = `
-
-M400
-G1 X-48.2 F3000
-M400
-G0 E50 F100
-
-G1 Z0.2
-
-;M400
-;M73 P1.717
-
-G90
-M83
-G0 E50 F100
-M400
-`;
-
-// Bambu machine_end_gcode starts right after the line below (which restores
-// the Z motor current). Stripping from this point removes the per-print
-// cooldown/park/finish-sound so the farm loop chains directly into ejection.
-const PRINT_END_TRIGGER = /^M17 R[^\n]*\n/m;
+// G-code transformation constants (EXTRUDE_CALI_*, PRINT_END_TRIGGER) live in
+// js/printQueueWorker.js — the heavy lifting runs there off the main thread.
 
 const DEFAULT_END_GCODE = `; ==== END-OF-PRINT — part ejection ====
 M400                          ; wait for moves to finish
@@ -51,6 +24,47 @@ M42 P0 S0                     ; cylinder IN
 G4 S1
 ; --- ready for next print ---
 `;
+
+// Single in-flight cancel handler (used by the toast × button)
+let currentExportCancel = null;
+
+function showExportToast(message, percent) {
+  const toast = document.getElementById('exportToast');
+  const titleEl = document.getElementById('exportToastTitle');
+  const msgEl = document.getElementById('exportToastMessage');
+  const barEl = document.getElementById('exportToastBar');
+  if (!toast) return;
+  toast.classList.remove('success', 'error');
+  toast.classList.add('show');
+  titleEl.textContent = 'Exporting';
+  msgEl.textContent = message;
+  barEl.style.width = (percent || 0) + '%';
+}
+
+function updateExportToast(message, percent) {
+  const msgEl = document.getElementById('exportToastMessage');
+  const barEl = document.getElementById('exportToastBar');
+  if (msgEl) msgEl.textContent = message;
+  if (barEl && typeof percent === 'number') barEl.style.width = percent + '%';
+}
+
+function finishExportToast(state, title, message) {
+  const toast = document.getElementById('exportToast');
+  const titleEl = document.getElementById('exportToastTitle');
+  const msgEl = document.getElementById('exportToastMessage');
+  const barEl = document.getElementById('exportToastBar');
+  if (!toast) return;
+  toast.classList.remove('success', 'error');
+  toast.classList.add(state); // 'success' or 'error'
+  titleEl.textContent = title;
+  msgEl.textContent = message;
+  barEl.style.width = '100%';
+  // Auto-dismiss success after a few seconds; keep errors until the user closes.
+  currentExportCancel = null;
+  if (state === 'success') {
+    setTimeout(() => toast.classList.remove('show'), 4000);
+  }
+}
 
 function initPrintQueue(monaco) {
   const dropZone = document.getElementById('dropZone');
@@ -143,6 +157,18 @@ function initPrintQueue(monaco) {
   loopCount.addEventListener('input', updateSummary);
 
   exportBtn.addEventListener('click', doExport);
+
+  // Toast × button: cancels an in-flight export, or just dismisses a finished one
+  const exportToastCancel = document.getElementById('exportToastCancel');
+  const exportToast = document.getElementById('exportToast');
+  exportToastCancel.addEventListener('click', () => {
+    if (currentExportCancel) {
+      currentExportCancel();
+      currentExportCancel = null;
+    } else {
+      exportToast.classList.remove('show');
+    }
+  });
 
   async function handleFiles(fileList) {
     const files = [...fileList].filter(f => f.name.toLowerCase().endsWith('.3mf'));
@@ -404,9 +430,14 @@ function initPrintQueue(monaco) {
       totalFilament.textContent = '—';
     }
 
-    // ── Output file size estimate ────────────────────────────────────────
-    // Sum uncompressed gcode bytes; pick a compression ratio observed in
-    // the source archives (gcode usually compresses to ~25-35% with DEFLATE).
+    const estimated = estimateOutputSize(loops);
+    totalSize.textContent = estimated > 0 ? formatBytes(estimated) : '—';
+  }
+
+  // Estimate the final .gcode.3mf compressed size in bytes (for the summary
+  // AND for ETA computation during export). Returns 0 when nothing in queue.
+  function estimateOutputSize(loops) {
+    if (queue.length === 0) return 0;
     let uncTotal = 0;
     let cmpTotal = 0;
     let uncSum = 0;
@@ -417,24 +448,18 @@ function initPrintQueue(monaco) {
         cmpTotal += j.gcodeCompressedBytes;
       }
     });
-    if (uncSum > 0) {
-      const ratio = uncTotal > 0 ? cmpTotal / uncTotal : 0.3;
-      const endGcodeBytes = endGcodeEditor
-        ? new Blob([endGcodeEditor.getValue() || '']).size
-        : 0;
-      // Per-loop uncompressed text = sum of jobs + ejection per print.
-      // Total = per-loop × loops + overhead from base archive (thumbnails, xml, etc.)
-      const perLoopUnc = uncSum + endGcodeBytes * perLoopCount;
-      const totalUnc = perLoopUnc * loops;
-      const baseJob = queue[0];
-      const overhead = baseJob && baseJob.gcodeCompressedBytes
-        ? Math.max(0, baseJob.sizeBytes - baseJob.gcodeCompressedBytes)
-        : 50 * 1024;
-      const estimated = Math.round(totalUnc * ratio + overhead);
-      totalSize.textContent = formatBytes(estimated);
-    } else {
-      totalSize.textContent = '—';
-    }
+    if (uncSum === 0) return 0;
+    const ratio = uncTotal > 0 ? cmpTotal / uncTotal : 0.3;
+    const endGcodeBytes = endGcodeEditor
+      ? new Blob([endGcodeEditor.getValue() || '']).size
+      : 0;
+    const perLoopUnc = uncSum + endGcodeBytes * queue.length;
+    const totalUnc = perLoopUnc * loops;
+    const baseJob = queue[0];
+    const overhead = baseJob && baseJob.gcodeCompressedBytes
+      ? Math.max(0, baseJob.sizeBytes - baseJob.gcodeCompressedBytes)
+      : 50 * 1024;
+    return Math.round(totalUnc * ratio + overhead);
   }
 
   function formatBytes(bytes) {
@@ -472,170 +497,142 @@ function initPrintQueue(monaco) {
       }
     }
 
-    showLoader('Building concatenated G-code...');
+    showExportToast('Spawning export worker...', 0);
     try {
-      const zip = await buildOutput3mf(queue, loops, endGcode, cooldown);
-      if (fileHandle) {
-        await streamZipToWritable(zip, fileHandle, msg => showLoader(msg));
-      } else {
-        showLoader('Compressing archive...');
-        const blob = await zip.generateAsync(
-          { type: 'blob', compression: 'DEFLATE', streamFiles: true },
-          metadata => showLoader(`Compressing... ${Math.round(metadata.percent)}%`)
-        );
-        downloadBlob(blob, filename);
-      }
+      await runExportInWorker({ filename, fileHandle, loops, cooldown, endGcode });
+      finishExportToast('success', 'Export complete', filename);
     } catch (err) {
       console.error(err);
-      alert('Export failed: ' + err.message);
+      finishExportToast('error', 'Export failed', err.message);
     }
-    hideLoader();
   }
 
-  // Stream a JSZip instance directly to a File System Access writable handle
-  // so we never hold the entire .gcode.3mf in memory. Uses backpressure: pause
-  // the zip stream while the disk write is in flight.
-  function streamZipToWritable(zip, fileHandle, onProgress) {
+  // Spin up the export worker, stream chunks back, write them to disk (or
+  // accumulate in a Blob for fallback download), and display a live ETA.
+  function runExportInWorker({ filename, fileHandle, loops, cooldown, endGcode }) {
     return new Promise((resolve, reject) => {
-      fileHandle.createWritable().then(writable => {
-        const stream = zip.generateInternalStream({
-          type: 'uint8array',
-          compression: 'DEFLATE',
-          streamFiles: true,
+      const worker = new Worker('js/printQueueWorker.js');
+      let writable = null;
+      const blobChunks = [];
+      let writePromise = Promise.resolve();
+      let cancelled = false;
+
+      // ETA tracking — based on bytes/sec rate, not JSZip's non-linear percent.
+      // The percent from JSZip jumps through tiny metadata files then crawls
+      // through the giant gcode → ETA via percent underestimates massively.
+      let writeStart = 0;
+      let bytesWritten = 0;
+      const estimatedTotalSize = estimateOutputSize(loops);
+
+      const cleanup = () => worker.terminate();
+
+      // Cancel handler registered globally so the toast × button can trigger it.
+      currentExportCancel = () => {
+        cancelled = true;
+        cleanup();
+        if (writable) writable.abort().catch(() => {});
+        reject(new Error('Cancelled by user'));
+      };
+
+      worker.onmessage = (ev) => {
+        if (cancelled) return;
+        const msg = ev.data;
+        if (msg.type === 'progress') {
+          updateExportToast(msg.message, 0);
+          return;
+        }
+        if (msg.type === 'chunk') {
+          if (writeStart === 0) writeStart = performance.now();
+          bytesWritten += msg.chunk.byteLength;
+
+          // Write/buffer the chunk, then ack the worker so it pumps the next.
+          writePromise = writePromise.then(async () => {
+            if (cancelled) return;
+            if (writable) await writable.write(msg.chunk);
+            else blobChunks.push(msg.chunk);
+
+            const percent = msg.percent || 0;
+            const elapsedMs = performance.now() - writeStart;
+
+            // Bytes-based ETA: more accurate than JSZip's non-linear percent.
+            // After ~500 ms we have a meaningful write rate; before that show no ETA.
+            let etaText = '';
+            let displayPercent = percent;
+            if (elapsedMs > 500 && bytesWritten > 0 && estimatedTotalSize > 0) {
+              const bytesPerSec = bytesWritten / (elapsedMs / 1000);
+              const remainingBytes = Math.max(0, estimatedTotalSize - bytesWritten);
+              const etaSec = Math.round(remainingBytes / bytesPerSec);
+              etaText = ` · ${formatSeconds(etaSec)} left`;
+              // Override JSZip's percent with a byte-based one — far more linear.
+              displayPercent = Math.min(99, Math.round(bytesWritten / estimatedTotalSize * 100));
+            }
+            const phase = writable ? 'Writing' : 'Packing';
+            const sizeText = ` · ${formatBytes(bytesWritten)}`;
+            updateExportToast(`${phase}... ${displayPercent}%${sizeText}${etaText}`, displayPercent);
+
+            worker.postMessage({ type: 'ack' });
+          }).catch(err => {
+            cleanup();
+            if (writable) writable.abort().catch(() => {});
+            reject(err);
+          });
+          return;
+        }
+        if (msg.type === 'done') {
+          writePromise.then(async () => {
+            if (cancelled) return;
+            if (writable) {
+              updateExportToast('Closing file...', 100);
+              await writable.close();
+            } else {
+              const blob = new Blob(blobChunks, { type: 'application/zip' });
+              downloadBlob(blob, filename);
+            }
+            cleanup();
+            resolve();
+          }, err => {
+            cleanup();
+            reject(err);
+          });
+          return;
+        }
+        if (msg.type === 'error') {
+          cleanup();
+          if (writable) writable.abort().catch(() => {});
+          reject(new Error(msg.message));
+          return;
+        }
+      };
+
+      worker.onerror = (err) => {
+        cleanup();
+        reject(new Error(err.message || 'Worker crashed'));
+      };
+
+      // Open the writable BEFORE posting the build message so the user
+      // gesture from showSaveFilePicker is still active.
+      const setupWritable = fileHandle
+        ? fileHandle.createWritable().then(w => { writable = w; })
+        : Promise.resolve();
+
+      setupWritable.then(() => {
+        // Send everything the worker needs. We don't transfer baseBuffer so the
+        // original ArrayBuffer remains usable on main (user might re-export).
+        worker.postMessage({
+          type: 'build',
+          baseBuffer: queue[0].buffer,
+          jobs: queue.map(j => ({
+            name: j.name,
+            gcodeContent: j.gcodeContent,
+            timeSeconds: j.timeSeconds,
+            weightG: j.weightG,
+          })),
+          loops,
+          cooldown,
+          endGcode,
         });
-        stream
-          .on('data', (chunk, metadata) => {
-            stream.pause();
-            writable.write(chunk).then(() => {
-              if (onProgress && metadata && typeof metadata.percent === 'number') {
-                onProgress(`Writing... ${Math.round(metadata.percent)}%`);
-              }
-              stream.resume();
-            }).catch(err => {
-              stream.pause();
-              writable.abort().finally(() => reject(err));
-            });
-          })
-          .on('error', err => {
-            writable.abort().finally(() => reject(err));
-          })
-          .on('end', () => {
-            writable.close().then(resolve, reject);
-          })
-          .resume();
       }, reject);
     });
-  }
-
-  // Build a concatenated .gcode.3mf using the first job as the template.
-  // Output ordering: for each loop, run all jobs in queue order, inserting the
-  // end-of-print gcode after every print (including after the last one of the
-  // session, to leave the part ejected and the machine in a safe state).
-  async function buildOutput3mf(jobs, loops, endGcode, cooldownSeconds) {
-    const baseJob = jobs[0];
-    const baseZip = await JSZip.loadAsync(baseJob.buffer);
-    const filenames = Object.keys(baseZip.files);
-
-    // Find the gcode entry to overwrite in the template
-    const targetGcodePath = filenames.find(f =>
-      f.toLowerCase().endsWith('.gcode') && !f.toLowerCase().endsWith('.md5')
-    ) || 'Metadata/plate_1.gcode';
-
-    // ── Concatenate gcodes ──────────────────────────────────────────────
-    const ejection = endGcode.endsWith('\n') ? endGcode : endGcode + '\n';
-    const ejectionMarker = '\n; ==== farm-loop ejection ====\n';
-
-    const chunks = [];
-
-    // Header summary comment (visible in Bambu / file inspector)
-    let totalTime = 0;
-    let totalWeight = 0;
-    let timeKnown = true;
-    let weightKnown = true;
-    for (const j of jobs) {
-      if (j.timeSeconds != null) totalTime += j.timeSeconds; else timeKnown = false;
-      if (j.weightG != null) totalWeight += j.weightG; else weightKnown = false;
-    }
-    totalTime *= loops;
-    totalWeight *= loops;
-    const cooldownTotal = (cooldownSeconds || 0) * loops;
-    if (timeKnown) totalTime += cooldownTotal;
-
-    chunks.push(`; Generated by Print Queue — farm-loop concatenation\n`);
-    chunks.push(`; jobs: ${jobs.length}, loops: ${loops}, total prints: ${jobs.length * loops}\n`);
-    if (cooldownSeconds > 0) {
-      chunks.push(`; cooldown after each loop: ${cooldownSeconds}s (×${loops} = ${cooldownTotal}s)\n`);
-    }
-    if (timeKnown) chunks.push(`; total estimated time: ${formatSeconds(totalTime)} (${totalTime}s)\n`);
-    if (weightKnown) chunks.push(`; total filament weight [g]: ${totalWeight.toFixed(2)}\n`);
-    chunks.push(`;\n`);
-
-    const lastLoopIdx = loops - 1;
-    const lastJobIdx = jobs.length - 1;
-
-    for (let loop = 0; loop < loops; loop++) {
-      for (let i = 0; i < jobs.length; i++) {
-        const job = jobs[i];
-        const isVeryLast = loop === lastLoopIdx && i === lastJobIdx;
-
-        let content = replaceExtrudeCaliSection(job.gcodeContent, EXTRUDE_CALI_REPLACEMENT);
-        if (!isVeryLast) content = stripPrintEnd(content);
-
-        chunks.push(`\n; ==== loop ${loop + 1}/${loops} — print ${i + 1}/${jobs.length}: ${job.name} ====\n`);
-        chunks.push(content);
-        if (!content.endsWith('\n')) chunks.push('\n');
-        chunks.push(ejectionMarker);
-        chunks.push(ejection);
-      }
-    }
-
-    // Build the gcode as a Blob (virtual concat) rather than a single string,
-    // because String.prototype joining hits V8's ~512 MB length limit on big
-    // farm loops. Blobs have no such cap and JSZip can stream them.
-    const concatenated = new Blob(chunks, { type: 'text/plain;charset=utf-8' });
-
-    // Replace the gcode entry in the zip
-    baseZip.file(targetGcodePath, concatenated);
-
-    // Also overwrite its .md5 sibling if present (avoid checksum mismatch).
-    // We delete it; the slicer/printer should accept the file without it.
-    const md5Path = targetGcodePath + '.md5';
-    if (baseZip.files[md5Path]) {
-      baseZip.remove(md5Path);
-    }
-
-    // ── Update slice_info.config (prediction + weight) ──────────────────
-    const sliceInfoPath = filenames.find(f => f.toLowerCase().includes('slice_info.config'));
-    if (sliceInfoPath) {
-      try {
-        let xml = await baseZip.files[sliceInfoPath].async('text');
-        if (timeKnown) {
-          xml = replaceMetadataValue(xml, 'prediction', String(Math.round(totalTime)));
-        }
-        if (weightKnown) {
-          xml = replaceMetadataValue(xml, 'weight', totalWeight.toFixed(2));
-        }
-        baseZip.file(sliceInfoPath, xml);
-      } catch (e) {
-        console.warn('Could not update slice_info.config:', e);
-      }
-    }
-
-    // Caller decides how to serialize: streaming write to disk, or blob.
-    return baseZip;
-  }
-
-  // Helpers
-  function replaceMetadataValue(xml, key, newValue) {
-    // Match <metadata key="KEY" value="..." /> with single OR double quotes
-    const re = new RegExp(
-      `(<metadata\\s+key=(["'])${escapeRegex(key)}\\2\\s+value=)(["'])[^"']*(\\3\\s*/?>)`,
-      'i'
-    );
-    if (re.test(xml)) {
-      return xml.replace(re, `$1$3${escapeXml(newValue)}$4`);
-    }
-    return xml;
   }
 
   function downloadBlob(blob, filename) {
@@ -660,58 +657,6 @@ function escapeHtml(str) {
   return String(str)
     .replace(/&/g, '&amp;').replace(/</g, '&lt;')
     .replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-}
-
-function escapeXml(str) {
-  return String(str)
-    .replace(/&/g, '&amp;').replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&apos;');
-}
-
-function escapeRegex(str) {
-  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
-// Replace the Bambu "extrude cali test" section content with the farm-loop
-// replacement. Two strategies, in order:
-//   • If the marker appears twice (some firmwares use start+end markers),
-//     replace strictly between them.
-//   • Otherwise, replace from the single marker up to the next major section
-//     header (a line starting with ;====+).
-function replaceExtrudeCaliSection(gcode, replacement) {
-  const matches = [];
-  let m;
-  EXTRUDE_CALI_MARKER.lastIndex = 0;
-  while ((m = EXTRUDE_CALI_MARKER.exec(gcode)) !== null) {
-    matches.push({ index: m.index, end: m.index + m[0].length });
-  }
-
-  const body = replacement.trim();
-
-  if (matches.length >= 2) {
-    const a = matches[0];
-    const b = matches[1];
-    return gcode.slice(0, a.end) + '\n' + body + '\n' + gcode.slice(b.index);
-  }
-  if (matches.length === 1) {
-    const a = matches[0];
-    const after = gcode.slice(a.end);
-    const nextSection = after.match(/\n;====+/);
-    if (nextSection) {
-      const endIdx = a.end + nextSection.index + 1;
-      return gcode.slice(0, a.end) + '\n' + body + '\n' + gcode.slice(endIdx);
-    }
-  }
-  return gcode;
-}
-
-// Strip the per-print end-of-print (cooldown, park, finish sound, motor off).
-// The Bambu machine_end_gcode starts immediately after `M17 R ; restore z current`.
-function stripPrintEnd(gcode) {
-  const m = gcode.match(PRINT_END_TRIGGER);
-  if (!m) return gcode;
-  const cutoff = m.index + m[0].length;
-  return gcode.slice(0, cutoff);
 }
 
 function loadEndGcode() {

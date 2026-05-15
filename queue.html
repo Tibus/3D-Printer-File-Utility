@@ -121,6 +121,19 @@
     </div>
   </div>
 
+  <!-- Export Toast (non-blocking, worker-backed) -->
+  <div class="export-toast" id="exportToast" role="status" aria-live="polite">
+    <div class="export-toast-header">
+      <div class="export-toast-spinner"></div>
+      <div class="export-toast-title" id="exportToastTitle">Exporting...</div>
+      <button type="button" class="export-toast-close" id="exportToastCancel" title="Cancel export">×</button>
+    </div>
+    <div class="export-toast-message" id="exportToastMessage">Starting...</div>
+    <div class="export-toast-bar">
+      <div class="export-toast-bar-fill" id="exportToastBar"></div>
+    </div>
+  </div>
+
   <!-- Loader Overlay -->
   <div class="loader-overlay" id="loaderOverlay">
     <div class="loader-content">
