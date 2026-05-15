@@ -15,24 +15,93 @@
 importScripts('https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js');
 
 // Must mirror constants in printQueue.js
-const EXTRUDE_CALI_MARKER = /^;===== extrude cali test =+/gm;
+// Cali section bounds: starts at the "extrude cali test" header and ends at
+// the next major section header — "turn off light and wait extrude temperature".
+// Both anchored at line start so they don't match the same text appearing
+// inside the `; machine_start_gcode = ...` config comment.
+const EXTRUDE_CALI_START_RE = /^M620.3 W1; === turn on filament tangle detection=+/m;
+const EXTRUDE_CALI_END_RE = /^;========turn off light and wait extrude temperature =+/m;
+
 const EXTRUDE_CALI_REPLACEMENT = `
+M620.3 W1; === turn on filament tangle detection===
 
-M400
-G1 X-48.2 F3000
-M400
-G0 E50 F100
+M400 S2
 
-G1 Z0.2
-
-;M400
-;M73 P1.717
 
 G90
 M83
 G0 E50 F100
 M400
+M400
 `;
+
+// Wipe-nozzle section: starts at `;===== wipe nozzle =====...` and ends at
+// `M211 R[; pop softend status]`. The end marker is preserved in the output.
+const WIPE_NOZZLE_START_RE = /^;===== wipe nozzle =+/m;
+const WIPE_NOZZLE_END_RE = /^G1 X25 Y175 F30000.1 ;Brush material+/m;
+const WIPE_NOZZLE_REPLACEMENT = `
+;===== wipe nozzle ===============================
+M1002 gcode_claim_action : 14
+M975 S1
+
+M104 S170 ; set temp down to heatbed acceptable
+M106 S255 ; turn on fan (G28 has turn off fan)
+M211 S; push soft endstop status
+M211 X0 Y0 Z0 ;turn off Z axis endstop
+
+M83
+G1 E-1 F500
+G90
+M83
+
+M109 S170
+M104 S140
+G0 X90 Y-4 F30000
+G90
+G1 Z5 F30000
+G1 X25 Y175 F30000.1 ; Brush material
+G1 Z0.2 F30000.1
+G1 Y185
+G91
+G1 X-30 F30000
+G1 Y-2
+G1 X27
+G1 Y1.5
+G1 X-28
+G1 Y-2
+G1 X30
+G1 Y1.5
+G1 X-30
+G90
+M83
+G1 Z5
+G0 X55 Y175 F20000 ; find a soft place to home
+G28 Z P0 T300 ; home z with low precision, permit 300deg temperature
+G29.2 S0 ; turn off ABL
+G1 Z10
+G1 X85 Y185
+G1 Z-1.01
+G1 X95
+G1 X90
+M211 R ; pop softend status
+
+G1 Z5 F30000
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+`;
+
+// Re-enable runout / clog / tangle detection just before the soft-endstop
+// disable in the post-cali block (after the "turn off light" section).
+const SOFT_ENDSTOP_OFF_RE = /^M211 X0 Y0 Z0\b/m;
+const PRE_SOFT_ENDSTOP_INJECTION = `M412 S1 ;    ===turn on  filament runout detection===
+M400 P10
+
+G392 S0 ;turn on clog detect
+
+M620.3 W1; === turn on filament tangle detection===
+M400 S2
+
+`;
+
 const PRINT_END_TRIGGER = /^M17 R[^\n]*\n/m;
 
 // Backpressure: each chunk emitted waits for the main thread to acknowledge
@@ -67,7 +136,7 @@ async function handleBuild({ jobs, loops, endGcode, cooldown, baseBuffer, preEnd
     f.toLowerCase().endsWith('.gcode') && !f.toLowerCase().endsWith('.md5')
   ) || 'Metadata/plate_1.gcode';
 
-  const ejection = endGcode.endsWith('\n') ? endGcode : endGcode + '\n';
+  const ejection = trimAllLines(endGcode.endsWith('\n') ? endGcode : endGcode + '\n');
   const ejectionMarker = '\n; ==== farm-loop ejection ====\n';
 
   self.postMessage({ type: 'progress', message: 'Concatenating G-code...' });
@@ -96,15 +165,18 @@ async function handleBuild({ jobs, loops, endGcode, cooldown, baseBuffer, preEnd
   if (weightKnown) chunks.push(`; total filament weight [g]: ${totalWeight.toFixed(2)}\n`);
   chunks.push(`;\n`);
 
-  const lastLoopIdx = loops - 1;
-  const lastJobIdx = jobs.length - 1;
+  const totalPrints = loops * jobs.length;
+  let printSeq = 0;
 
   for (let loop = 0; loop < loops; loop++) {
     for (let i = 0; i < jobs.length; i++) {
       const job = jobs[i];
-      const isVeryLast = loop === lastLoopIdx && i === lastJobIdx;
+      printSeq++;
+      const isVeryLast = printSeq === totalPrints;
 
       let content = replaceExtrudeCaliSection(job.gcodeContent, EXTRUDE_CALI_REPLACEMENT);
+      content = replaceWipeNozzleSection(content, WIPE_NOZZLE_REPLACEMENT);
+      content = injectBeforeSoftEndstop(content, PRE_SOFT_ENDSTOP_INJECTION);
       if (preEndCode && preEndMin > 0) {
         content = injectBeforeEnd(content, preEndMin, preEndCode, {
           jobName: job.name,
@@ -114,13 +186,41 @@ async function handleBuild({ jobs, loops, endGcode, cooldown, baseBuffer, preEnd
           totalPrints: jobs.length,
         });
       }
-      if (!isVeryLast) content = stripPrintEnd(content);
+
+      // Split into print body (up to & including `M17 R ; restore z current`)
+      // and original end-of-print (cooldown, park, finish sound, motors off).
+      // Order in the output: body → custom ejection → original end.
+      const { body, end: originalEnd } = splitAtPrintEnd(content);
+      const trimmedBody = trimAllLines(body);
+      // Bambu's "park" move at the start of the end-of-print stays at the
+      // current Z. For farm-loop printing we want to clear the bed (Z20) so
+      // the ejection has headroom before the printer parks.
+      let fixedEnd = originalEnd.replace(
+        /^G1 X-13 Y180 F3600$/m,
+        'G1 X-13 Y180 Z20 F3600'
+      );
+      // Final motor-off: replace the LAST `M18 X Y Z` with a plain `M18`
+      // so every stepper (incl. extruder) is fully disabled, not just XYZ.
+      fixedEnd = replaceLastM18XYZ(fixedEnd);
+      const trimmedEnd = trimAllLines(fixedEnd);
 
       chunks.push(`\n; ==== loop ${loop + 1}/${loops} — print ${i + 1}/${jobs.length}: ${job.name} ====\n`);
-      chunks.push(content);
-      if (!content.endsWith('\n')) chunks.push('\n');
+      chunks.push(trimmedBody);
+      if (!trimmedBody.endsWith('\n')) chunks.push('\n');
       chunks.push(ejectionMarker);
       chunks.push(ejection);
+      if (trimmedEnd) {
+        chunks.push('\n; ==== original end-of-print ====\n');
+        chunks.push(trimmedEnd);
+        if (!trimmedEnd.endsWith('\n')) chunks.push('\n');
+      }
+
+      // Between-prints separator (not after the very last print).
+      if (!isVeryLast) {
+        chunks.push(`\n; === END OF LOOP ${printSeq} ===\n`);
+        chunks.push(`; Preparing for next loop...\n`);
+        chunks.push(`G4 S2 ; brief pause between loops\n`);
+      }
     }
   }
 
@@ -175,90 +275,130 @@ async function handleBuild({ jobs, loops, endGcode, cooldown, baseBuffer, preEnd
   self.postMessage({ type: 'done' });
 }
 
-// ── Transformations (mirrors of main thread) ───────────────────────────────
-function replaceExtrudeCaliSection(gcode, replacement) {
-  const matches = [];
-  let m;
-  EXTRUDE_CALI_MARKER.lastIndex = 0;
-  while ((m = EXTRUDE_CALI_MARKER.exec(gcode)) !== null) {
-    matches.push({ index: m.index, end: m.index + m[0].length });
-  }
+// ── Transformations ────────────────────────────────────────────────────────
+// Insert the runout / clog / tangle detection re-enable block right before
+// the soft-endstop disable line that sits AFTER the "turn off light and
+// wait extrude temperature" section. Bambu gcode has several `M211 X0 Y0 Z0`
+// lines in the start sequence — we specifically want the one in the
+// post-cali block, so the search is anchored AFTER the turn-off-light header.
+function injectBeforeSoftEndstop(gcode, snippet) {
+  const turnOffLightRe = /^;========turn off light and wait extrude temperature =+/m;
+  const turnOffMatch = gcode.match(turnOffLightRe);
+  if (!turnOffMatch) return gcode;
+
+  const afterTurnOff = gcode.slice(turnOffMatch.index);
+  const endstopMatch = afterTurnOff.match(SOFT_ENDSTOP_OFF_RE);
+  if (!endstopMatch) return gcode;
+
+  const insertAt = turnOffMatch.index + endstopMatch.index;
+  const body = snippet.endsWith('\n') ? snippet : snippet + '\n';
+  return gcode.slice(0, insertAt) + body + gcode.slice(insertAt);
+}
+
+// Replace everything from the wipe-nozzle START marker (inclusive) up to the
+// `M211 R` line (exclusive). The M211 R line is preserved so the softend
+// status pop / wipe-nozzle-end section continues cleanly.
+function replaceWipeNozzleSection(gcode, replacement) {
+  const startMatch = gcode.match(WIPE_NOZZLE_START_RE);
+  if (!startMatch) return gcode;
+
+  const afterStart = gcode.slice(startMatch.index);
+  const endMatch = afterStart.match(WIPE_NOZZLE_END_RE);
+  if (!endMatch) return gcode;
+
+  const endIdx = startMatch.index + endMatch.index;
   const body = replacement.trim();
-  if (matches.length >= 2) {
-    const a = matches[0], b = matches[1];
-    return gcode.slice(0, a.end) + '\n' + body + '\n' + gcode.slice(b.index);
-  }
-  if (matches.length === 1) {
-    const a = matches[0];
-    const after = gcode.slice(a.end);
-    const nextSection = after.match(/\n;====+/);
-    if (nextSection) {
-      const endIdx = a.end + nextSection.index + 1;
-      return gcode.slice(0, a.end) + '\n' + body + '\n' + gcode.slice(endIdx);
-    }
-  }
-  return gcode;
+  return gcode.slice(0, startMatch.index) + body + '\n' + gcode.slice(endIdx);
 }
 
-function stripPrintEnd(gcode) {
-  const m = gcode.match(PRINT_END_TRIGGER);
-  if (!m) return gcode;
-  return gcode.slice(0, m.index + m[0].length);
-}
-
-// Insert a G-code snippet `secondsBeforeEnd` seconds before the end of the
-// print. Uses Bambu/Marlin `M73 P<percent> R<minutes>` progress markers to
-// locate the insertion point. If the print is shorter than `secondsBeforeEnd`
-// (or has no M73 markers), inserts at the very start of the gcode.
+// Replace everything from the START marker (inclusive) up to the END marker
+// (exclusive). The END marker — `;========turn off light...` — is preserved
+// in the output because it's the header of the next section.
 //
-// The first M73 in the file has the largest R value (≈ total print time);
-// each subsequent M73 has a smaller R. We pick the first M73 whose remaining
-// time (R × 60) falls below the threshold — that's the entry into the
-// "last N seconds" zone.
+// Fallback: if the specific END marker is missing (different firmware /
+// custom slicer profile), use the next major `;====+` header instead.
+function replaceExtrudeCaliSection(gcode, replacement) {
+  const startMatch = gcode.match(EXTRUDE_CALI_START_RE);
+  if (!startMatch) return gcode;
+
+  const afterStart = gcode.slice(startMatch.index);
+
+  // Try the specific end marker first
+  let endRelIdx = -1;
+  const endSpecific = afterStart.match(EXTRUDE_CALI_END_RE);
+  if (endSpecific) {
+    endRelIdx = endSpecific.index;
+  } else {
+    // Fallback: skip the start-marker line, then look for the next
+    // top-level `;====+` section header.
+    const startLineEnd = afterStart.indexOf('\n');
+    if (startLineEnd < 0) return gcode;
+    const beyondStart = afterStart.slice(startLineEnd);
+    const nextSection = beyondStart.match(/\n;====+/);
+    if (!nextSection) return gcode;
+    endRelIdx = startLineEnd + nextSection.index + 1;
+  }
+
+  const endIdx = startMatch.index + endRelIdx;
+  const body = replacement.trim();
+  return gcode.slice(0, startMatch.index) + body + '\n' + gcode.slice(endIdx);
+}
+
+// Replace the LAST occurrence of a line starting with `M18 X Y Z` with a
+// plain `M18` (so all steppers, including the extruder, are disabled).
+// Anchored on line start to avoid matching the same text inside the
+// `; machine_end_gcode = ...` config comment.
+function replaceLastM18XYZ(text) {
+  const matches = [...text.matchAll(/^M18 X Y Z[^\n]*$/gm)];
+  if (matches.length === 0) return text;
+  const last = matches[matches.length - 1];
+  return text.slice(0, last.index) + 'M18' + text.slice(last.index + last[0].length);
+}
+
+// Trim trailing whitespace on every line. Leading indentation is preserved
+// (Bambu uses it inside M622/M623 blocks for readability). Done with regex
+// rather than split/join to avoid allocating one tiny string per line on
+// multi-GB output.
+function trimAllLines(text) {
+  return text;
+    //.replace(/[ \t\r]+\n/g, '\n')   // trailing whitespace on each line
+    //.replace(/[ \t\r]+$/, '');      // very last line (no trailing newline)
+}
+
+// Split a job's gcode at `M17 R ; restore z current`. `body` includes the
+// M17 R line itself; `end` is everything after it (cooldown / park / finish
+// sound / motor off — i.e. the printer's machine_end_gcode).
+// If the M17 R marker isn't found, returns the whole thing as body.
+function splitAtPrintEnd(gcode) {
+  const m = gcode.match(PRINT_END_TRIGGER);
+  if (!m) return { body: gcode, end: '' };
+  const cutoff = m.index + m[0].length;
+  return { body: gcode.slice(0, cutoff), end: gcode.slice(cutoff) };
+}
+
 // Insert a G-code snippet right AFTER the M73 progress marker whose
 // remaining-time `R` (in minutes) is closest to `minutesBeforeEnd`.
 // If the total print time is below the trigger window, or if there are no
 // M73 markers at all, fall back to injecting at the very start of the gcode.
-function injectBeforeEnd(gcode, minutesBeforeEnd, snippet, ctx) {
-  // Match the progress-marker M73 only (followed by a space).
-  // The Bambu firmware also emits `M73.2 R1.0 ;Reset left time magnitude`
-  // which is a SPEED/TIME RESET command — its R value is unrelated to
-  // remaining time and would skew the "closest" match.
+// Match the progress-marker M73 only (followed by a space) — Bambu also
+// emits `M73.2 R1.0 ;Reset left time magnitude` which is a SPEED/TIME RESET
+// command with an R unrelated to remaining time.
+function injectBeforeEnd(gcode, minutesBeforeEnd, snippet, _ctx) {
   const re = /^M73\s[^\n]*\bR(\d+(?:\.\d+)?)/gm;
   const matches = [];
   let m;
   while ((m = re.exec(gcode)) !== null) {
-    matches.push({ index: m.index, line: m[0], remainingMin: parseFloat(m[1]) });
+    matches.push({ index: m.index, remainingMin: parseFloat(m[1]) });
   }
 
   const body = snippet.endsWith('\n') ? snippet : snippet + '\n';
   const block = `; ==== pre-end trigger (${minutesBeforeEnd} min before end) ====\n${body}`;
   const startBlock = '\n' + block;
-  const tag = ctx
-    ? `[pre-end ${ctx.loopIdx}/${ctx.totalLoops}·${ctx.printIdx}/${ctx.totalPrints} ${ctx.jobName}]`
-    : '[pre-end]';
 
-  if (matches.length === 0) {
-    console.log(`${tag} no M73 R markers found in gcode → injecting at the very start`);
-    return startBlock + gcode;
-  }
+  if (matches.length === 0) return startBlock + gcode;
 
   const totalRemainMin = matches[0].remainingMin;
-  const lastM73 = matches[matches.length - 1];
-
-  console.log(
-    `${tag} found ${matches.length} M73 markers. ` +
-    `Total print duration ≈ ${totalRemainMin} min. ` +
-    `First: "${matches[0].line}"  ·  Last: "${lastM73.line}"`
-  );
-
-  if (totalRemainMin <= minutesBeforeEnd) {
-    console.log(
-      `${tag} print is shorter than the trigger window ` +
-      `(${totalRemainMin} min ≤ ${minutesBeforeEnd} min) → injecting at the very start`
-    );
-    return startBlock + gcode;
-  }
+  if (totalRemainMin <= minutesBeforeEnd) return startBlock + gcode;
 
   // Pick the M73 whose R is closest to the requested minutes-before-end.
   // Ties go to the earliest match (more conservative: fire slightly early
@@ -277,11 +417,6 @@ function injectBeforeEnd(gcode, minutesBeforeEnd, snippet, ctx) {
   // Insert right AFTER the chosen M73 line (after its terminating newline).
   const lineEnd = gcode.indexOf('\n', target.index);
   const insertAt = lineEnd >= 0 ? lineEnd + 1 : gcode.length;
-
-  console.log(
-    `${tag} injecting after marker #${bestIdx + 1}/${matches.length}: ` +
-    `"${target.line}" (R = ${target.remainingMin} min, |R − ${minutesBeforeEnd}| = ${bestDist})`
-  );
 
   return gcode.slice(0, insertAt) + block + gcode.slice(insertAt);
 }

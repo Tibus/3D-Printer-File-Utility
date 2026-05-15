@@ -4,6 +4,7 @@
 
 const END_GCODE_STORAGE_KEY = 'printQueue.endGcode';
 const COOLDOWN_STORAGE_KEY = 'printQueue.cooldownBetweenLoops';
+const LOOP_COUNT_STORAGE_KEY = 'printQueue.loopCount';
 const PREEND_MINUTES_STORAGE_KEY = 'printQueue.preEndMinutes';
 const PREEND_SNIPPET_STORAGE_KEY = 'printQueue.preEndSnippet';
 
@@ -165,7 +166,11 @@ function initPrintQueue(monaco) {
   preEndMinutes.addEventListener('input', () => savePreEndMinutes(preEndMinutes.value));
   preEndSnippet.addEventListener('input', () => savePreEndSnippet(preEndSnippet.value));
 
-  loopCount.addEventListener('input', updateSummary);
+  loopCount.value = loadLoopCount();
+  loopCount.addEventListener('input', () => {
+    saveLoopCount(loopCount.value);
+    updateSummary();
+  });
 
   exportBtn.addEventListener('click', doExport);
 
@@ -703,6 +708,23 @@ function loadCooldown() {
 function saveCooldown(value) {
   try {
     localStorage.setItem(COOLDOWN_STORAGE_KEY, String(parseInt(value) || 0));
+  } catch (_) {}
+}
+
+function loadLoopCount() {
+  try {
+    const stored = localStorage.getItem(LOOP_COUNT_STORAGE_KEY);
+    if (stored !== null) {
+      const n = parseInt(stored);
+      if (!isNaN(n) && n >= 1) return n;
+    }
+  } catch (_) {}
+  return 1;
+}
+
+function saveLoopCount(value) {
+  try {
+    localStorage.setItem(LOOP_COUNT_STORAGE_KEY, String(Math.max(1, parseInt(value) || 1)));
   } catch (_) {}
 }
 
