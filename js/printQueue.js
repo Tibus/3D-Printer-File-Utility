@@ -242,6 +242,16 @@ function initPrintQueue(monaco) {
       } catch (_) {}
     }
 
+    // Capture compressed + uncompressed gcode size so the summary can estimate
+    // the final .gcode.3mf size with the actual observed compression ratio.
+    const gcodeEntry = zip.files[gcodePath];
+    const gcodeUncompressedBytes = gcodeEntry && gcodeEntry._data && gcodeEntry._data.uncompressedSize
+      ? gcodeEntry._data.uncompressedSize
+      : new Blob([gcodeContent]).size;
+    const gcodeCompressedBytes = gcodeEntry && gcodeEntry._data && gcodeEntry._data.compressedSize
+      ? gcodeEntry._data.compressedSize
+      : null;
+
     return {
       id: cryptoRandomId(),
       name: file.name,
@@ -249,6 +259,8 @@ function initPrintQueue(monaco) {
       buffer,
       gcodeContent,
       gcodePath,
+      gcodeUncompressedBytes,
+      gcodeCompressedBytes,
       thumbnailDataUrl,
       timeSeconds,
       weightG,
@@ -391,6 +403,45 @@ function initPrintQueue(monaco) {
     } else {
       totalFilament.textContent = '—';
     }
+
+    // ── Output file size estimate ────────────────────────────────────────
+    // Sum uncompressed gcode bytes; pick a compression ratio observed in
+    // the source archives (gcode usually compresses to ~25-35% with DEFLATE).
+    let uncTotal = 0;
+    let cmpTotal = 0;
+    let uncSum = 0;
+    queue.forEach(j => {
+      uncSum += j.gcodeUncompressedBytes || 0;
+      if (j.gcodeUncompressedBytes && j.gcodeCompressedBytes) {
+        uncTotal += j.gcodeUncompressedBytes;
+        cmpTotal += j.gcodeCompressedBytes;
+      }
+    });
+    if (uncSum > 0) {
+      const ratio = uncTotal > 0 ? cmpTotal / uncTotal : 0.3;
+      const endGcodeBytes = endGcodeEditor
+        ? new Blob([endGcodeEditor.getValue() || '']).size
+        : 0;
+      // Per-loop uncompressed text = sum of jobs + ejection per print.
+      // Total = per-loop × loops + overhead from base archive (thumbnails, xml, etc.)
+      const perLoopUnc = uncSum + endGcodeBytes * perLoopCount;
+      const totalUnc = perLoopUnc * loops;
+      const baseJob = queue[0];
+      const overhead = baseJob && baseJob.gcodeCompressedBytes
+        ? Math.max(0, baseJob.sizeBytes - baseJob.gcodeCompressedBytes)
+        : 50 * 1024;
+      const estimated = Math.round(totalUnc * ratio + overhead);
+      totalSize.textContent = formatBytes(estimated);
+    } else {
+      totalSize.textContent = '—';
+    }
+  }
+
+  function formatBytes(bytes) {
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1).replace('.', ',')} KB`;
+    if (bytes < 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1).replace('.', ',')} MB`;
+    return `${(bytes / 1024 / 1024 / 1024).toFixed(2).replace('.', ',')} GB`;
   }
 
   // ── Export ───────────────────────────────────────────────────────────────
