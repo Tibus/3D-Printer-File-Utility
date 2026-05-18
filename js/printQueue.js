@@ -11,22 +11,9 @@ const PREEND_SNIPPET_STORAGE_KEY = 'printQueue.preEndSnippet';
 // G-code transformation constants (EXTRUDE_CALI_*, PRINT_END_TRIGGER) live in
 // js/printQueueWorker.js — the heavy lifting runs there off the main thread.
 
-const DEFAULT_END_GCODE = `; ==== END-OF-PRINT — part ejection ====
-M400                          ; wait for moves to finish
-M104 S0                       ; nozzle off
-M140 S0                       ; bed off
-M106 P1 S0                    ; part fan off
-M106 P2 S0                    ; aux fan off
-G90                           ; absolute positioning
-G1 Z250 F1200                 ; raise Z to clear part
-G1 X0 Y0 F6000                ; park
-; --- pneumatic ejection ---
-M42 P0 S255                   ; trigger cylinder OUT
-G4 S2                         ; hold 2s
-M42 P0 S0                     ; cylinder IN
-G4 S1
-; --- ready for next print ---
-`;
+// Empty by default — the user MUST supply their own ejection sequence
+// before the export button does anything.
+const DEFAULT_END_GCODE = '';
 
 // Single in-flight cancel handler (used by the toast × button)
 let currentExportCancel = null;
@@ -58,7 +45,7 @@ function finishExportToast(state, title, message) {
   const barEl = document.getElementById('exportToastBar');
   if (!toast) return;
   toast.classList.remove('success', 'error');
-  toast.classList.add(state); // 'success' or 'error'
+  toast.classList.add('show', state); // ensure visible + 'success' or 'error'
   titleEl.textContent = title;
   msgEl.textContent = message;
   barEl.style.width = '100%';
@@ -494,6 +481,14 @@ function initPrintQueue(monaco) {
     const endGcode = endGcodeEditor.getValue() || '';
     const preEndMin = Math.max(0, parseFloat(preEndMinutes.value) || 0);
     const preEndCode = (preEndSnippet.value || '').trim();
+
+    // The end-of-print ejection gcode is mandatory: without it the farm loop
+    // would chain prints with no part removal between them.
+    if (endGcode.trim() === '') {
+      endGcodeEditor.focus();
+      finishExportToast('error', 'Export blocked', 'End-of-Print G-code is required.');
+      return;
+    }
 
     const baseName = (outputName.value || 'print-queue').replace(/\.gcode\.3mf$|\.3mf$/i, '');
     const filename = `${baseName}.gcode.3mf`;
