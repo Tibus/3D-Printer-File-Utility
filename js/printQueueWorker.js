@@ -126,7 +126,7 @@ self.onmessage = (ev) => {
   }
 };
 
-async function handleBuild({ jobs, loops, endGcode, cooldown, baseBuffer, preEndMin, preEndCode }) {
+async function handleBuild({ jobs, loops, endGcode, cooldown, baseBuffer, preEndMin, preEndCode, filamentSlotsList }) {
   self.postMessage({ type: 'progress', message: 'Reading base archive...' });
 
   const baseZip = await JSZip.loadAsync(baseBuffer);
@@ -168,7 +168,17 @@ async function handleBuild({ jobs, loops, endGcode, cooldown, baseBuffer, preEnd
   const totalPrints = loops * jobs.length;
   let printSeq = 0;
 
+  const filamentList = Array.isArray(filamentSlotsList) ? filamentSlotsList : [];
+
   for (let loop = 0; loop < loops; loop++) {
+    // Bambu AMS tool-change at the start of each loop, cycling through the
+    // user-provided slot list. Skipped when the list is empty.
+    if (filamentList.length > 0) {
+      const slot = filamentList[loop % filamentList.length];
+      chunks.push(`\n; === LOOP ${loop + 1} — switching to AMS slot ${slot} ===\n`);
+      chunks.push(`T${slot}\n`);
+    }
+
     for (let i = 0; i < jobs.length; i++) {
       const job = jobs[i];
       printSeq++;
@@ -177,6 +187,12 @@ async function handleBuild({ jobs, loops, endGcode, cooldown, baseBuffer, preEnd
       let content = replaceExtrudeCaliSection(job.gcodeContent, EXTRUDE_CALI_REPLACEMENT);
       content = replaceWipeNozzleSection(content, WIPE_NOZZLE_REPLACEMENT);
       content = injectBeforeSoftEndstop(content, PRE_SOFT_ENDSTOP_INJECTION);
+      // When the user has explicitly chosen filament slots per loop, silence
+      // the embedded `T<n>` / `M620 S<n>A` / `M621 S<n>A` / `M620.1` commands
+      // so the print's start gcode doesn't override our forced slot.
+      if (filamentList.length > 0) {
+        content = stripFilamentCommands(content);
+      }
       if (preEndCode && preEndMin > 0) {
         content = injectBeforeEnd(content, preEndMin, preEndCode, {
           jobName: job.name,
@@ -342,6 +358,29 @@ function replaceExtrudeCaliSection(gcode, replacement) {
   const endIdx = startMatch.index + endRelIdx;
   const body = replacement.trim();
   return gcode.slice(0, startMatch.index) + body + '\n' + gcode.slice(endIdx);
+}
+
+// Comment out AMS-related filament-change commands so the embedded start
+// gcode doesn't override the loop's forced filament slot.
+//
+// Stripped:
+//   • T0 / T1 / T2 / T3   (AMS tool changes)
+//   • M620 S<digit>A      (activate AMS slot)
+//   • M621 S<digit>A      (confirm AMS slot)
+//   • M620.1 ...          (flush volumetric params, contains tool index)
+//
+// Preserved:
+//   • T255                (unload — needed at end of print)
+//   • T1000               (direct extruder, no AMS interaction)
+//   • M620 M              (enable remap, harmless without slot change)
+//   • M620.3              (filament tangle detection)
+function stripFilamentCommands(gcode) {
+  const tag = '; [farm-loop: filament locked] ';
+  return gcode
+    .replace(/^(\s*)(T[0-3]\b[^\n]*)$/gm, '$1' + tag + '$2')
+    .replace(/^(\s*)(M620 S\d+A\b[^\n]*)$/gm, '$1' + tag + '$2')
+    .replace(/^(\s*)(M621 S\d+A\b[^\n]*)$/gm, '$1' + tag + '$2')
+    .replace(/^(\s*)(M620\.1\b[^\n]*)$/gm, '$1' + tag + '$2');
 }
 
 // Replace the LAST occurrence of a line starting with `M18 X Y Z` with a

@@ -89,8 +89,24 @@
           <label for="preEndSnippet">G-code to inject (leave empty to disable)</label>
           <textarea id="preEndSnippet" class="text-input" rows="3"
             spellcheck="false"
-            placeholder="; e.g. trigger external bell&#10;M42 P1 S255&#10;G4 S1&#10;M42 P1 S0"></textarea>
+            placeholder="; ex : M140 S35 ;Pre-unheat!"></textarea>
         </div>
+      </div>
+    </div>
+
+    <!-- Filament per loop -->
+    <div class="card" id="filamentCard" style="display: none;">
+      <h2>Filament per loop (Bambu AMS)</h2>
+      <p class="param-help" style="margin-bottom: var(--space-sm);">
+        Inserts a Bambu <code>T&lt;n&gt;</code> tool-change at the start of each loop,
+        cycling through the slots below. Leave empty to disable.
+      </p>
+      <div class="param-group">
+        <label for="filamentSlots">AMS slots (comma-separated, 0-3)</label>
+        <input type="text" id="filamentSlots" class="text-input"
+          spellcheck="false"
+          placeholder="0, 1, 2, 3">
+        <span class="param-help">Loop N uses slot at index (N-1) mod count.</span>
       </div>
     </div>
 

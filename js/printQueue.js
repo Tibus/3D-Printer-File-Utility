@@ -5,6 +5,7 @@
 const END_GCODE_STORAGE_KEY = 'printQueue.endGcode';
 const COOLDOWN_STORAGE_KEY = 'printQueue.cooldownBetweenLoops';
 const LOOP_COUNT_STORAGE_KEY = 'printQueue.loopCount';
+const FILAMENT_SLOTS_STORAGE_KEY = 'printQueue.filamentSlots';
 const PREEND_MINUTES_STORAGE_KEY = 'printQueue.preEndMinutes';
 const PREEND_SNIPPET_STORAGE_KEY = 'printQueue.preEndSnippet';
 
@@ -70,6 +71,8 @@ function initPrintQueue(monaco) {
   const preEndCard = document.getElementById('preEndCard');
   const preEndMinutes = document.getElementById('preEndMinutes');
   const preEndSnippet = document.getElementById('preEndSnippet');
+  const filamentCard = document.getElementById('filamentCard');
+  const filamentSlots = document.getElementById('filamentSlots');
   const loopCard = document.getElementById('loopCard');
   const loopCount = document.getElementById('loopCount');
   const cooldownInput = document.getElementById('cooldownBetweenLoops');
@@ -152,6 +155,10 @@ function initPrintQueue(monaco) {
   preEndSnippet.value = loadPreEndSnippet();
   preEndMinutes.addEventListener('input', () => savePreEndMinutes(preEndMinutes.value));
   preEndSnippet.addEventListener('input', () => savePreEndSnippet(preEndSnippet.value));
+
+  // Restore + persist filament-per-loop list
+  filamentSlots.value = loadFilamentSlots();
+  filamentSlots.addEventListener('input', () => saveFilamentSlots(filamentSlots.value));
 
   loopCount.value = loadLoopCount();
   loopCount.addEventListener('input', () => {
@@ -304,6 +311,7 @@ function initPrintQueue(monaco) {
     queueCard.style.display = hasJobs ? '' : 'none';
     endGcodeCard.style.display = hasJobs ? '' : 'none';
     preEndCard.style.display = hasJobs ? '' : 'none';
+    filamentCard.style.display = hasJobs ? '' : 'none';
     loopCard.style.display = hasJobs ? '' : 'none';
     exportCard.style.display = hasJobs ? '' : 'none';
 
@@ -481,6 +489,12 @@ function initPrintQueue(monaco) {
     const endGcode = endGcodeEditor.getValue() || '';
     const preEndMin = Math.max(0, parseFloat(preEndMinutes.value) || 0);
     const preEndCode = (preEndSnippet.value || '').trim();
+    // Parse "0, 1, 2, 3" → [0,1,2,3]. Invalid entries are dropped silently;
+    // an empty list disables the feature.
+    const filamentSlotsList = (filamentSlots.value || '')
+      .split(/[,\s]+/)
+      .map(s => parseInt(s, 10))
+      .filter(n => !isNaN(n) && n >= 0);
 
     // The end-of-print ejection gcode is mandatory: without it the farm loop
     // would chain prints with no part removal between them.
@@ -513,7 +527,7 @@ function initPrintQueue(monaco) {
 
     showExportToast('Spawning export worker...', 0);
     try {
-      await runExportInWorker({ filename, fileHandle, loops, cooldown, endGcode, preEndMin, preEndCode });
+      await runExportInWorker({ filename, fileHandle, loops, cooldown, endGcode, preEndMin, preEndCode, filamentSlotsList });
       finishExportToast('success', 'Export complete', filename);
     } catch (err) {
       console.error(err);
@@ -523,7 +537,7 @@ function initPrintQueue(monaco) {
 
   // Spin up the export worker, stream chunks back, write them to disk (or
   // accumulate in a Blob for fallback download), and display a live ETA.
-  function runExportInWorker({ filename, fileHandle, loops, cooldown, endGcode, preEndMin, preEndCode }) {
+  function runExportInWorker({ filename, fileHandle, loops, cooldown, endGcode, preEndMin, preEndCode, filamentSlotsList }) {
     return new Promise((resolve, reject) => {
       const worker = new Worker('js/printQueueWorker.js');
       let writable = null;
@@ -646,6 +660,7 @@ function initPrintQueue(monaco) {
           endGcode,
           preEndMin,
           preEndCode,
+          filamentSlotsList,
         });
       }, reject);
     });
@@ -720,6 +735,20 @@ function loadLoopCount() {
 function saveLoopCount(value) {
   try {
     localStorage.setItem(LOOP_COUNT_STORAGE_KEY, String(Math.max(1, parseInt(value) || 1)));
+  } catch (_) {}
+}
+
+function loadFilamentSlots() {
+  try {
+    const stored = localStorage.getItem(FILAMENT_SLOTS_STORAGE_KEY);
+    if (stored !== null) return stored;
+  } catch (_) {}
+  return '';
+}
+
+function saveFilamentSlots(value) {
+  try {
+    localStorage.setItem(FILAMENT_SLOTS_STORAGE_KEY, value || '');
   } catch (_) {}
 }
 
