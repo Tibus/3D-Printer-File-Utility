@@ -246,16 +246,24 @@ async function handleBuild({ jobs, loops, endGcode, cooldown, baseBuffer, preEnd
   const md5Path = targetGcodePath + '.md5';
   if (baseZip.files[md5Path]) baseZip.remove(md5Path);
 
-  // Update slice_info.config so the printer shows the correct prediction
+  // Update slice_info.config: prediction, weight, and (when filament cycling
+  // is enabled with >1 unique slot) the filament declarations + mapping so
+  // the firmware actually honours each `T<n>` instead of locking to the
+  // user-confirmed slot at print start.
+  const uniqueSlots = [...new Set(filamentList)];
   const sliceInfoPath = filenames.find(f => f.toLowerCase().includes('slice_info.config'));
   if (sliceInfoPath) {
     try {
       let xml = await baseZip.files[sliceInfoPath].async('text');
       if (timeKnown) xml = replaceMetadataValue(xml, 'prediction', String(Math.round(totalTime)));
       if (weightKnown) xml = replaceMetadataValue(xml, 'weight', totalWeight.toFixed(2));
+      if (uniqueSlots.length > 1) {
+        xml = expandSliceInfoForMultiFilament(xml, uniqueSlots);
+        console.log('[farm-loop] Expanded slice_info.config to declare ' + uniqueSlots.length + ' filaments (slots ' + uniqueSlots.join(',') + ')');
+      }
       baseZip.file(sliceInfoPath, xml);
     } catch (e) {
-      // Non-fatal: keep going
+      console.warn('[farm-loop] Failed to update slice_info.config:', e);
     }
   }
 
@@ -358,6 +366,55 @@ function replaceExtrudeCaliSection(gcode, replacement) {
   const endIdx = startMatch.index + endRelIdx;
   const body = replacement.trim();
   return gcode.slice(0, startMatch.index) + body + '\n' + gcode.slice(endIdx);
+}
+
+// Make slice_info.config declare N distinct filaments (one per unique AMS
+// slot in the user's list) and map each AMS slot to its own filament group.
+// Without this, the firmware sees a single-filament print, asks the user to
+// confirm one slot, and re-routes every T<n> in the gcode to that slot.
+//
+// Transforms:
+//   • The lone <filament id="1" ...> entry is duplicated as ids 1..N
+//   • <metadata key="filament_maps" value="1 1 1 1"> becomes "G0 G1 G2 G3"
+//     where Gn = (uniqueSlots.indexOf(n) + 1) when the slot is used, else 1
+//   • <layer_filament_list filament_list="0"> becomes "0 1 ... N-1"
+function expandSliceInfoForMultiFilament(xml, uniqueSlots) {
+  const filamentMatch = xml.match(/<filament\b[^>]*\/>/);
+  if (!filamentMatch) return xml;
+  const template = filamentMatch[0];
+
+  // Build N replicas. Reset per-slot usage stats since we don't track them
+  // (the firmware mostly uses these for display anyway).
+  const replicas = uniqueSlots.map((slot, idx) => {
+    return template
+      .replace(/\bid="[^"]*"/, `id="${idx + 1}"`)
+      .replace(/\bused_m="[^"]*"/, `used_m="0"`)
+      .replace(/\bused_g="[^"]*"/, `used_g="0"`);
+  }).join('\n    ');
+
+  let result = xml.replace(/<filament\b[^>]*\/>/, replicas);
+
+  // filament_maps has one entry per AMS slot index (0..3). For slots in our
+  // cycle, point to that filament's group; for slots NOT in the cycle, keep
+  // group 1 (the default — harmless).
+  const groups = [0, 1, 2, 3].map(slot => {
+    const i = uniqueSlots.indexOf(slot);
+    return i >= 0 ? i + 1 : 1;
+  }).join(' ');
+  result = result.replace(
+    /<metadata\b\s+key=(["'])filament_maps\1\s+value=(["'])[^"']*\2\s*\/>/,
+    `<metadata key="filament_maps" value="${groups}"/>`
+  );
+
+  // layer_filament_list filament_list="0 1 2 ... N-1" so the firmware knows
+  // every filament is referenced during the print.
+  const layerList = uniqueSlots.map((_, i) => i).join(' ');
+  result = result.replace(
+    /<layer_filament_list\b\s+filament_list=(["'])[^"']*\1/,
+    `<layer_filament_list filament_list="${layerList}"`
+  );
+
+  return result;
 }
 
 // Comment out AMS-related filament-change commands so the embedded start
