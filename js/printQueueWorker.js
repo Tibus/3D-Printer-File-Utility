@@ -187,11 +187,13 @@ async function handleBuild({ jobs, loops, endGcode, cooldown, baseBuffer, preEnd
       let content = replaceExtrudeCaliSection(job.gcodeContent, EXTRUDE_CALI_REPLACEMENT);
       content = replaceWipeNozzleSection(content, WIPE_NOZZLE_REPLACEMENT);
       content = injectBeforeSoftEndstop(content, PRE_SOFT_ENDSTOP_INJECTION);
-      // When the user has explicitly chosen filament slots per loop, silence
-      // the embedded `T<n>` / `M620 S<n>A` / `M621 S<n>A` / `M620.1` commands
-      // so the print's start gcode doesn't override our forced slot.
+      // When the user has chosen filament slots per loop, REWRITE the slot
+      // index in the embedded T<n> / M620 S<n>A / M621 S<n>A commands so the
+      // start gcode loads + activates the correct slot. Stripping them would
+      // skip the AMS load and the print would never feed any filament.
       if (filamentList.length > 0) {
-        content = stripFilamentCommands(content);
+        const slot = filamentList[loop % filamentList.length];
+        content = rewriteFilamentSlot(content, slot);
       }
       if (preEndCode && preEndMin > 0) {
         content = injectBeforeEnd(content, preEndMin, preEndCode, {
@@ -417,27 +419,26 @@ function expandSliceInfoForMultiFilament(xml, uniqueSlots) {
   return result;
 }
 
-// Comment out AMS-related filament-change commands so the embedded start
-// gcode doesn't override the loop's forced filament slot.
+// Rewrite the AMS slot index in the embedded filament commands so the
+// print's start gcode actually loads the slot we want for this loop.
 //
-// Stripped:
-//   • T0 / T1 / T2 / T3   (AMS tool changes)
-//   • M620 S<digit>A      (activate AMS slot)
-//   • M621 S<digit>A      (confirm AMS slot)
-//   • M620.1 ...          (flush volumetric params, contains tool index)
+// Rewritten:
+//   • T0 / T1 / T2 / T3   → T<slot>                  (AMS tool change)
+//   • M620 S<digit>A      → M620 S<slot>A            (activate AMS slot)
+//   • M621 S<digit>A      → M621 S<slot>A            (confirm AMS slot)
 //
-// Preserved:
+// Preserved (unchanged):
 //   • T255                (unload — needed at end of print)
 //   • T1000               (direct extruder, no AMS interaction)
-//   • M620 M              (enable remap, harmless without slot change)
+//   • M620 M              (enable remap, harmless)
+//   • M620.1              (flush params — T<n> there is a TEMPERATURE)
 //   • M620.3              (filament tangle detection)
-function stripFilamentCommands(gcode) {
-  const tag = '; [farm-loop: filament locked] ';
+function rewriteFilamentSlot(gcode, slot) {
+  const s = String(slot);
   return gcode
-    .replace(/^(\s*)(T[0-3]\b[^\n]*)$/gm, '$1' + tag + '$2')
-    .replace(/^(\s*)(M620 S\d+A\b[^\n]*)$/gm, '$1' + tag + '$2')
-    .replace(/^(\s*)(M621 S\d+A\b[^\n]*)$/gm, '$1' + tag + '$2')
-    .replace(/^(\s*)(M620\.1\b[^\n]*)$/gm, '$1' + tag + '$2');
+    .replace(/^(\s*)T[0-3]\b/gm, '$1T' + s)
+    .replace(/^(\s*)M620 S\d+A\b/gm, '$1M620 S' + s + 'A')
+    .replace(/^(\s*)M621 S\d+A\b/gm, '$1M621 S' + s + 'A');
 }
 
 // Replace the LAST occurrence of a line starting with `M18 X Y Z` with a
