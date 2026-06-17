@@ -126,7 +126,7 @@ self.onmessage = (ev) => {
   }
 };
 
-async function handleBuild({ jobs, loops, endGcode, cooldown, baseBuffer, preEndMin, preEndCode, filamentSlotsList }) {
+async function handleBuild({ jobs, loops, endGcode, cooldown, baseBuffer, preEndMin, preEndCode, filamentSlotsList, filamentPerPrintMode }) {
   self.postMessage({ type: 'progress', message: 'Reading base archive...' });
 
   const baseZip = await JSZip.loadAsync(baseBuffer);
@@ -169,12 +169,20 @@ async function handleBuild({ jobs, loops, endGcode, cooldown, baseBuffer, preEnd
   let printSeq = 0;
 
   const filamentList = Array.isArray(filamentSlotsList) ? filamentSlotsList : [];
+  // Slot for a given (loop, print) position. In per-print mode the slot
+  // advances on every print across the whole run; otherwise it advances once
+  // per loop (queue), so all prints within a loop share the same slot.
+  const slotFor = (loop, i) => {
+    if (filamentList.length === 0) return null;
+    const idx = filamentPerPrintMode ? (loop * jobs.length + i) : loop;
+    return filamentList[idx % filamentList.length];
+  };
 
   for (let loop = 0; loop < loops; loop++) {
-    // Bambu AMS tool-change at the start of each loop, cycling through the
-    // user-provided slot list. Skipped when the list is empty.
-    if (filamentList.length > 0) {
-      const slot = filamentList[loop % filamentList.length];
+    // Per-loop (queue) mode: a single Bambu AMS tool-change at the start of the
+    // loop. In per-print mode the switch is emitted before each print instead.
+    if (filamentList.length > 0 && !filamentPerPrintMode) {
+      const slot = slotFor(loop, 0);
       chunks.push(`\n; === LOOP ${loop + 1} — switching to AMS slot ${slot} ===\n`);
       chunks.push(`T${slot}\n`);
     }
@@ -183,16 +191,22 @@ async function handleBuild({ jobs, loops, endGcode, cooldown, baseBuffer, preEnd
       const job = jobs[i];
       printSeq++;
       const isVeryLast = printSeq === totalPrints;
+      const slot = slotFor(loop, i);
+
+      // Per-print mode: tool-change before this individual print.
+      if (slot !== null && filamentPerPrintMode) {
+        chunks.push(`\n; === PRINT ${printSeq} — switching to AMS slot ${slot} ===\n`);
+        chunks.push(`T${slot}\n`);
+      }
 
       let content = replaceExtrudeCaliSection(job.gcodeContent, EXTRUDE_CALI_REPLACEMENT);
       content = replaceWipeNozzleSection(content, WIPE_NOZZLE_REPLACEMENT);
       content = injectBeforeSoftEndstop(content, PRE_SOFT_ENDSTOP_INJECTION);
-      // When the user has chosen filament slots per loop, REWRITE the slot
-      // index in the embedded T<n> / M620 S<n>A / M621 S<n>A commands so the
-      // start gcode loads + activates the correct slot. Stripping them would
-      // skip the AMS load and the print would never feed any filament.
-      if (filamentList.length > 0) {
-        const slot = filamentList[loop % filamentList.length];
+      // When the user has chosen filament slots, REWRITE the slot index in the
+      // embedded T<n> / M620 S<n>A / M621 S<n>A commands so the start gcode
+      // loads + activates the correct slot. Stripping them would skip the AMS
+      // load and the print would never feed any filament.
+      if (slot !== null) {
         content = rewriteFilamentSlot(content, slot);
       }
       if (preEndCode && preEndMin > 0) {

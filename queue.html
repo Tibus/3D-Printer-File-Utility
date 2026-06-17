@@ -94,19 +94,29 @@
       </div>
     </div>
 
-    <!-- Filament per loop -->
+    <!-- Filament cycling -->
     <div class="card" id="filamentCard" style="display: none;">
-      <h2>Filament per loop (Bambu AMS)</h2>
+      <h2>Filament cycling (Bambu AMS)</h2>
       <p class="param-help" style="margin-bottom: var(--space-sm);">
-        Inserts a Bambu <code>T&lt;n&gt;</code> tool-change at the start of each loop,
-        cycling through the slots below. Leave empty to disable.
+        Inserts a Bambu <code>T&lt;n&gt;</code> tool-change, cycling through the
+        slots below. Leave empty to disable.
       </p>
       <div class="param-group">
         <label for="filamentSlots">AMS slots (comma-separated, 0-3)</label>
         <input type="text" id="filamentSlots" class="text-input"
           spellcheck="false"
           placeholder="0, 1, 2, 3">
-        <span class="param-help">Loop N uses slot at index (N-1) mod count.</span>
+        <span class="param-help" id="filamentSlotsHelp">Loop N uses slot at index (N-1) mod count.</span>
+      </div>
+      <div class="toggle-row" style="margin-top: var(--space-md);">
+        <label class="toggle-label" for="filamentPerPrint">
+          <span>Change per print</span>
+          <span class="toggle-help">On: switch slot for every print. Off: switch slot once per loop (queue).</span>
+        </label>
+        <label class="toggle-switch">
+          <input type="checkbox" id="filamentPerPrint">
+          <span class="toggle-slider"></span>
+        </label>
       </div>
     </div>
 

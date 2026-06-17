@@ -6,6 +6,7 @@ const END_GCODE_STORAGE_KEY = 'printQueue.endGcode';
 const COOLDOWN_STORAGE_KEY = 'printQueue.cooldownBetweenLoops';
 const LOOP_COUNT_STORAGE_KEY = 'printQueue.loopCount';
 const FILAMENT_SLOTS_STORAGE_KEY = 'printQueue.filamentSlots';
+const FILAMENT_PER_PRINT_STORAGE_KEY = 'printQueue.filamentPerPrint';
 const PREEND_MINUTES_STORAGE_KEY = 'printQueue.preEndMinutes';
 const PREEND_SNIPPET_STORAGE_KEY = 'printQueue.preEndSnippet';
 
@@ -73,6 +74,8 @@ function initPrintQueue(monaco) {
   const preEndSnippet = document.getElementById('preEndSnippet');
   const filamentCard = document.getElementById('filamentCard');
   const filamentSlots = document.getElementById('filamentSlots');
+  const filamentPerPrint = document.getElementById('filamentPerPrint');
+  const filamentSlotsHelp = document.getElementById('filamentSlotsHelp');
   const loopCard = document.getElementById('loopCard');
   const loopCount = document.getElementById('loopCount');
   const cooldownInput = document.getElementById('cooldownBetweenLoops');
@@ -159,6 +162,19 @@ function initPrintQueue(monaco) {
   // Restore + persist filament-per-loop list
   filamentSlots.value = loadFilamentSlots();
   filamentSlots.addEventListener('input', () => saveFilamentSlots(filamentSlots.value));
+
+  // Per-print vs per-loop (queue) filament cycling. Off = one switch per loop.
+  function updateFilamentHelp() {
+    filamentSlotsHelp.textContent = filamentPerPrint.checked
+      ? 'Print N uses slot at index (N-1) mod count.'
+      : 'Loop N uses slot at index (N-1) mod count.';
+  }
+  filamentPerPrint.checked = loadFilamentPerPrint();
+  updateFilamentHelp();
+  filamentPerPrint.addEventListener('change', () => {
+    saveFilamentPerPrint(filamentPerPrint.checked);
+    updateFilamentHelp();
+  });
 
   loopCount.value = loadLoopCount();
   loopCount.addEventListener('input', () => {
@@ -495,6 +511,8 @@ function initPrintQueue(monaco) {
       .split(/[,\s]+/)
       .map(s => parseInt(s, 10))
       .filter(n => !isNaN(n) && n >= 0);
+    // true → advance the slot for every print; false → once per loop (queue).
+    const filamentPerPrintMode = filamentPerPrint.checked;
 
     // The end-of-print ejection gcode is mandatory: without it the farm loop
     // would chain prints with no part removal between them.
@@ -527,7 +545,7 @@ function initPrintQueue(monaco) {
 
     showExportToast('Spawning export worker...', 0);
     try {
-      await runExportInWorker({ filename, fileHandle, loops, cooldown, endGcode, preEndMin, preEndCode, filamentSlotsList });
+      await runExportInWorker({ filename, fileHandle, loops, cooldown, endGcode, preEndMin, preEndCode, filamentSlotsList, filamentPerPrintMode });
       finishExportToast('success', 'Export complete', filename);
     } catch (err) {
       console.error(err);
@@ -537,7 +555,7 @@ function initPrintQueue(monaco) {
 
   // Spin up the export worker, stream chunks back, write them to disk (or
   // accumulate in a Blob for fallback download), and display a live ETA.
-  function runExportInWorker({ filename, fileHandle, loops, cooldown, endGcode, preEndMin, preEndCode, filamentSlotsList }) {
+  function runExportInWorker({ filename, fileHandle, loops, cooldown, endGcode, preEndMin, preEndCode, filamentSlotsList, filamentPerPrintMode }) {
     return new Promise((resolve, reject) => {
       const worker = new Worker('js/printQueueWorker.js');
       let writable = null;
@@ -661,6 +679,7 @@ function initPrintQueue(monaco) {
           preEndMin,
           preEndCode,
           filamentSlotsList,
+          filamentPerPrintMode,
         });
       }, reject);
     });
@@ -749,6 +768,19 @@ function loadFilamentSlots() {
 function saveFilamentSlots(value) {
   try {
     localStorage.setItem(FILAMENT_SLOTS_STORAGE_KEY, value || '');
+  } catch (_) {}
+}
+
+function loadFilamentPerPrint() {
+  try {
+    return localStorage.getItem(FILAMENT_PER_PRINT_STORAGE_KEY) === '1';
+  } catch (_) {}
+  return false;
+}
+
+function saveFilamentPerPrint(enabled) {
+  try {
+    localStorage.setItem(FILAMENT_PER_PRINT_STORAGE_KEY, enabled ? '1' : '0');
   } catch (_) {}
 }
 
