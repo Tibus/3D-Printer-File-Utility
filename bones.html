@@ -1,0 +1,393 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Manipulation de Bones - 3D Printer File Utility</title>
+  <link rel="stylesheet" href="bones.css">
+</head>
+<body>
+<div id="canvas-container"></div>
+
+<div id="ui">
+  <a href="index.html" class="bones-back-link">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <path d="M19 12H5M12 19l-7-7 7-7"/>
+    </svg>
+    Retour
+  </a>
+  <label id="modele-input-label" class="file-input-label">
+    📁 Charger un modèle
+    <input type="file" id="modele-input" class="file-input" accept=".glb,.gltf,.fbx">
+  </label>
+  <label id="fbx-input-label" class="file-input-label disabled">
+    🎬 Charger animation (.fbx / .glb)
+    <input type="file" id="fbx-input" class="file-input" accept=".fbx,.glb,.gltf" disabled>
+  </label>
+  <button id="play-pause-btn" class="control-btn">⏸️ Pause Animation</button>
+  <button id="toggle-skeleton-btn" class="control-btn">🦴 Masquer Squelette</button>
+  <button id="export-glb-btn" class="control-btn">💾 Exporter GLB</button>
+</div>
+
+<div id="info">
+  <h3>Manipulation de Bones</h3>
+  <p>Chargez un fichier .glb pour visualiser le modèle et éditer les bones.</p>
+  <div id="animations-list"></div>
+  <div id="fbx-status">
+    <strong>Animation FBX:</strong> <span id="fbx-filename"></span>
+  </div>
+</div>
+
+<div id="bone-panel">
+  <h3>🦴 Bones du Skeleton</h3>
+
+  <div id="mode-toggle">
+    <button id="mode-pose-btn" class="mode-btn active">✋ Pose</button>
+    <button id="mode-ik-btn" class="mode-btn">🎯 IK</button>
+    <button id="mode-paint-btn" class="mode-btn">🎨 Paint</button>
+    <button id="mode-joints-btn" class="mode-btn">🔧 Joints</button>
+    <button id="mode-props-btn" class="mode-btn">📦 Props</button>
+  </div>
+
+  <div id="bone-view-toggle">
+    <button id="bone-list-btn" class="mode-btn active">📋 Liste</button>
+    <button id="bone-schema-btn" class="mode-btn">🦴 Schéma</button>
+  </div>
+
+  <div id="bone-list">
+    <div id="no-bones-msg">Aucun modèle chargé</div>
+  </div>
+
+  <div id="bone-schema" style="display:none;">
+    <svg viewBox="0 0 100 200" xmlns="http://www.w3.org/2000/svg">
+      <g class="schema-bones">
+        <line x1="50" y1="14" x2="50" y2="28"/>
+        <line x1="50" y1="28" x2="50" y2="45"/>
+        <line x1="50" y1="45" x2="50" y2="62"/>
+        <line x1="50" y1="62" x2="50" y2="78"/>
+        <line x1="50" y1="78" x2="50" y2="92"/>
+        <!-- Bras droit (côté gauche écran) — Upperarm collé à la Clavicule, plus écarté -->
+        <line x1="50" y1="45" x2="35" y2="40"/>
+        <line x1="35" y1="40" x2="22" y2="44"/>
+        <line x1="22" y1="44" x2="18" y2="80"/>
+        <line x1="18" y1="80" x2="6" y2="105"/>
+        <!-- Bras gauche (côté droit écran) — Upperarm collé à la Clavicule, plus écarté -->
+        <line x1="50" y1="45" x2="65" y2="40"/>
+        <line x1="65" y1="40" x2="78" y2="44"/>
+        <line x1="78" y1="44" x2="82" y2="80"/>
+        <line x1="82" y1="80" x2="94" y2="105"/>
+        <!-- Jambe droite — un peu plus écartée -->
+        <line x1="50" y1="92" x2="40" y2="100"/>
+        <line x1="40" y1="100" x2="30" y2="135"/>
+        <line x1="30" y1="135" x2="20" y2="170"/>
+        <!-- Jambe gauche -->
+        <line x1="50" y1="92" x2="60" y2="100"/>
+        <line x1="60" y1="100" x2="70" y2="135"/>
+        <line x1="70" y1="135" x2="80" y2="170"/>
+      </g>
+      <!-- Hit areas invisibles et grandes (au dessus pour capturer les clics) -->
+      <g class="schema-hits">
+        <circle class="bone-hit" data-bone="Head" cx="50" cy="12" r="9"/>
+        <circle class="bone-hit" data-bone="NeckTwist01" cx="50" cy="28" r="7"/>
+        <circle class="bone-hit" data-bone="Spine02" cx="50" cy="45" r="7"/>
+        <circle class="bone-hit" data-bone="Spine01" cx="50" cy="62" r="7"/>
+        <circle class="bone-hit" data-bone="Waist" cx="50" cy="78" r="7"/>
+        <circle class="bone-hit" data-bone="Hip" cx="50" cy="92" r="7"/>
+
+        <circle class="bone-hit" data-bone="R_Clavicle" cx="35" cy="40" r="6"/>
+        <circle class="bone-hit" data-bone="R_Upperarm" cx="22" cy="44" r="6"/>
+        <circle class="bone-hit" data-bone="R_Forearm" cx="18" cy="80" r="7"/>
+        <circle class="bone-hit" data-bone="R_Hand" cx="6" cy="105" r="8"/>
+
+        <circle class="bone-hit" data-bone="L_Clavicle" cx="65" cy="40" r="6"/>
+        <circle class="bone-hit" data-bone="L_Upperarm" cx="78" cy="44" r="6"/>
+        <circle class="bone-hit" data-bone="L_Forearm" cx="82" cy="80" r="7"/>
+        <circle class="bone-hit" data-bone="L_Hand" cx="94" cy="105" r="8"/>
+
+        <circle class="bone-hit" data-bone="R_Thigh" cx="40" cy="100" r="7"/>
+        <circle class="bone-hit" data-bone="R_Calf" cx="30" cy="135" r="7"/>
+        <circle class="bone-hit" data-bone="R_Foot" cx="20" cy="170" r="8"/>
+
+        <circle class="bone-hit" data-bone="L_Thigh" cx="60" cy="100" r="7"/>
+        <circle class="bone-hit" data-bone="L_Calf" cx="70" cy="135" r="7"/>
+        <circle class="bone-hit" data-bone="L_Foot" cx="80" cy="170" r="8"/>
+      </g>
+
+      <g class="schema-nodes">
+        <circle class="bone-node" data-bone="Head" cx="50" cy="12" r="7"/>
+        <circle class="bone-node" data-bone="NeckTwist01" cx="50" cy="28" r="2.5"/>
+        <circle class="bone-node" data-bone="Spine02" cx="50" cy="45" r="3"/>
+        <circle class="bone-node" data-bone="Spine01" cx="50" cy="62" r="3"/>
+        <circle class="bone-node" data-bone="Waist" cx="50" cy="78" r="3"/>
+        <circle class="bone-node" data-bone="Hip" cx="50" cy="92" r="4"/>
+
+        <circle class="bone-node" data-bone="R_Clavicle" cx="35" cy="40" r="2.5"/>
+        <circle class="bone-node" data-bone="R_Upperarm" cx="22" cy="44" r="2.5"/>
+        <circle class="bone-node" data-bone="R_Forearm" cx="18" cy="80" r="2.5"/>
+        <circle class="bone-node" data-bone="R_Hand" cx="6" cy="105" r="3.5"/>
+
+        <circle class="bone-node" data-bone="L_Clavicle" cx="65" cy="40" r="2.5"/>
+        <circle class="bone-node" data-bone="L_Upperarm" cx="78" cy="44" r="2.5"/>
+        <circle class="bone-node" data-bone="L_Forearm" cx="82" cy="80" r="2.5"/>
+        <circle class="bone-node" data-bone="L_Hand" cx="94" cy="105" r="3.5"/>
+
+        <circle class="bone-node" data-bone="R_Thigh" cx="40" cy="100" r="2.5"/>
+        <circle class="bone-node" data-bone="R_Calf" cx="30" cy="135" r="2.5"/>
+        <circle class="bone-node" data-bone="R_Foot" cx="20" cy="170" r="3"/>
+
+        <circle class="bone-node" data-bone="L_Thigh" cx="60" cy="100" r="2.5"/>
+        <circle class="bone-node" data-bone="L_Calf" cx="70" cy="135" r="2.5"/>
+        <circle class="bone-node" data-bone="L_Foot" cx="80" cy="170" r="3"/>
+      </g>
+    </svg>
+    <div class="schema-legend">Vu de face — gauche écran = côté droit du personnage</div>
+  </div>
+
+  <div id="rotation-controls">
+    <div id="selected-bone-name">Aucun bone sélectionné</div>
+    <h4>Rotation (degrés)</h4>
+
+    <div class="rotation-axis">
+      <label>
+        <span class="axis-label x">X</span>
+        <input type="range" id="rot-x" min="-180" max="180" value="0" step="1">
+        <input type="number" id="rot-x-num" min="-180" max="180" value="0" step="1">
+      </label>
+    </div>
+
+    <div class="rotation-axis">
+      <label>
+        <span class="axis-label y">Y</span>
+        <input type="range" id="rot-y" min="-180" max="180" value="0" step="1">
+        <input type="number" id="rot-y-num" min="-180" max="180" value="0" step="1">
+      </label>
+    </div>
+
+    <div class="rotation-axis">
+      <label>
+        <span class="axis-label z">Z</span>
+        <input type="range" id="rot-z" min="-180" max="180" value="0" step="1">
+        <input type="number" id="rot-z-num" min="-180" max="180" value="0" step="1">
+      </label>
+    </div>
+
+    <button id="reset-bone-btn">🔄 Reset Rotation</button>
+
+    <div id="gizmo-hint">
+      <strong>Astuce Gizmo:</strong> Utilisez les cercles colorés pour tourner le bone.
+      Rouge = X, Vert = Y, Bleu = Z
+    </div>
+  </div>
+
+  <div id="weight-paint-controls">
+    <div id="paint-bone-name">Aucun bone sélectionné</div>
+
+    <div id="paint-mode-toggle">
+      <button id="paint-brush-btn" class="mode-btn active">🖌 Brush</button>
+      <button id="paint-select-btn" class="mode-btn">⬛ Sélection</button>
+    </div>
+
+    <div id="brush-controls">
+      <h4>🎨 Brush</h4>
+
+      <div class="brush-control">
+        <label>
+          <span class="brush-label">Rayon</span>
+          <input type="range" id="brush-radius" min="0.01" max="0.5" value="0.08" step="0.01">
+          <input type="number" id="brush-radius-num" min="0.01" max="0.5" value="0.08" step="0.01">
+        </label>
+      </div>
+
+      <div class="brush-control">
+        <label>
+          <span class="brush-label">Force</span>
+          <input type="range" id="brush-strength" min="0" max="1" value="0.5" step="0.05">
+          <input type="number" id="brush-strength-num" min="0" max="1" value="0.5" step="0.05">
+        </label>
+      </div>
+
+      <div class="brush-control">
+        <label>
+          <span class="brush-label">Atténuation</span>
+          <input type="range" id="brush-falloff" min="0" max="5" value="2" step="0.1">
+          <input type="number" id="brush-falloff-num" min="0" max="5" value="2" step="0.1">
+        </label>
+      </div>
+
+      <div id="weight-legend">
+        <span>0.0</span>
+        <div class="gradient"></div>
+        <span>1.0</span>
+      </div>
+
+      <div id="paint-hint">
+        <strong>Clic gauche</strong> = ajout de poids — <strong>Shift+clic</strong> = retrait<br>
+        Cliquer sur un marker bone pour changer de bone actif. La somme des poids reste à 1.0.
+      </div>
+
+      <label class="paint-toggle">
+        <input type="checkbox" id="brush-geodesic" checked>
+        <span>Brush géodésique (distance sur la surface)</span>
+      </label>
+    </div>
+
+    <div id="selection-controls" style="display:none;">
+      <h4>⬛ Sélection</h4>
+      <div class="brush-control">
+        <label>
+          <span class="brush-label">Poids</span>
+          <input type="range" id="selection-weight" min="0" max="1" value="1" step="0.05">
+          <input type="number" id="selection-weight-num" min="0" max="1" value="1" step="0.05">
+        </label>
+      </div>
+      <button id="apply-selection-weight" class="control-btn">✅ Appliquer aux sélectionnés</button>
+      <button id="clear-selection" class="control-btn">✖ Désélectionner tout</button>
+      <div id="selection-hint">
+        Drag pour sélectionner un rectangle de vertices. <strong>Shift+drag</strong> = ajouter.
+      </div>
+    </div>
+
+    <button id="smooth-weights-btn" class="control-btn">💧 Smooth Weights</button>
+    <button id="smooth-all-btn" class="control-btn">💧 Smooth All</button>
+    <button id="toggle-rest-pose-btn" class="control-btn">🧍 Pose au repos</button>
+  </div>
+
+  <div id="joint-edit-controls">
+    <div id="joint-bone-name">Aucun bone sélectionné</div>
+    <h4>🔧 Édition de joint</h4>
+
+    <div id="joint-hint">
+      Drag direct sur un marker pour replacer le pivot.<br>
+      <strong>Les vertex et les joints enfants restent en place.</strong><br>
+      Les rotations sont temporairement remises à la bind pose le temps de l'édition.
+    </div>
+
+    <button id="reset-joints-btn">🔄 Reset All Joints</button>
+  </div>
+
+  <div id="ik-controls">
+    <h4>🎯 Inverse Kinematics</h4>
+
+    <div id="ik-hint">
+      <strong style="color:#ff8800">Sphères orange</strong> = cibles (positions).<br>
+      <strong style="color:#00ddff">Sphères cyan</strong> = poles (coudes, genoux, sommet de tête).<br>
+      <strong style="color:#ff44ff">Sphères magenta</strong> = orientation (mains, pieds, pelvis).<br>
+      L'animation est gelée pendant le mode IK.
+    </div>
+
+    <label class="ik-toggle">
+      <input type="checkbox" id="ik-full-body">
+      <span><strong>Full body</strong> — le reste du corps suit (clavicule + colonne plient)</span>
+    </label>
+
+    <label class="ik-toggle">
+      <input type="checkbox" id="ik-lock-feet" checked>
+      <span><strong>Lock feet</strong> — les pieds restent collés au sol pendant le drag</span>
+    </label>
+
+    <label class="ik-toggle">
+      <input type="checkbox" id="ik-constraints" checked>
+      <span><strong>Anatomic constraints</strong> — limite genoux, coudes, colonne</span>
+    </label>
+
+    <label class="ik-toggle">
+      <input type="checkbox" id="ik-auto-balance">
+      <span><strong>Auto balance</strong> — ajuste le pelvis pour garder le centre de masse au-dessus des pieds</span>
+    </label>
+  </div>
+
+  <div id="props-controls">
+    <h4>📦 Props</h4>
+
+    <label id="prop-input-label" class="file-input-label">
+      ➕ Importer un prop (.glb)
+      <input type="file" id="prop-input" class="file-input" accept=".glb,.gltf">
+    </label>
+
+    <div id="props-list">
+      <div id="no-props-msg" style="color:#888;">Aucun prop importé</div>
+    </div>
+
+    <div id="prop-transform-controls" style="display:none;">
+      <div id="prop-selected-name">—</div>
+      <div id="prop-gizmo-mode-toggle">
+        <button id="prop-gizmo-translate" class="mode-btn active">↔️ Translate</button>
+        <button id="prop-gizmo-rotate"   class="mode-btn">🔄 Rotate</button>
+        <button id="prop-gizmo-scale"    class="mode-btn">⇲ Scale</button>
+      </div>
+      <button id="prop-delete-btn" class="control-btn">🗑️ Supprimer prop</button>
+
+      <div id="prop-bind-section">
+        <div id="prop-bind-title">🦴 Lier au squelette</div>
+        <select id="prop-bind-bone" class="prop-bind-select"></select>
+        <button id="prop-bind-btn" class="control-btn">🔗 Lier au bone sélectionné</button>
+        <button id="prop-unbind-btn" class="control-btn" style="display:none;">🔓 Détacher du squelette</button>
+        <div id="prop-bind-hint">
+          Choisis le bone d'attache initial (poids 1.0). Le prop devient skinné.
+          Bascule ensuite en mode 🎨 <strong>Paint</strong> pour redistribuer ses poids — utile pour une armure complète, une cape, etc.
+        </div>
+        <div id="prop-bind-status" style="display:none;"></div>
+      </div>
+
+      <div id="prop-cage-section" style="display:none;">
+        <div id="prop-cage-title">🛡️ Cage de déformation</div>
+        <button id="prop-add-cage-btn" class="control-btn">➕ Ajouter cage cylindrique</button>
+        <div id="prop-cage-actions" style="display:none;">
+          <div id="prop-cage-hint">
+            Cliquez un point vert sur la cage et glissez le gizmo pour déformer le prop.
+          </div>
+          <button id="prop-orient-cage-btn" class="control-btn">↔️ Orienter cage</button>
+          <button id="prop-reset-cage-btn" class="control-btn">🔄 Reset cage</button>
+          <button id="prop-remove-cage-btn" class="control-btn">🗑️ Retirer cage</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="skeleton-legend">
+    <h5>Légende</h5>
+    <div class="legend-item">
+      <div class="legend-color skeleton"></div>
+      <span>Squelette</span>
+    </div>
+    <div class="legend-item">
+      <div class="legend-color bone"></div>
+      <span>Bones (cliquez pour sélectionner)</span>
+    </div>
+    <div class="legend-item">
+      <div class="legend-color twist"></div>
+      <span>Bones twist (non cliquables)</span>
+    </div>
+    <div class="legend-item">
+      <div class="legend-color selected"></div>
+      <span>Bone sélectionné</span>
+    </div>
+  </div>
+</div>
+
+<div id="loading">
+  <div class="spinner"></div>
+  <p>Chargement...</p>
+</div>
+
+<div id="selection-rect"></div>
+
+<div id="animation-timeline">
+  <button id="timeline-play-btn" type="button" title="Play / Pause">⏸️</button>
+  <span id="timeline-current">0:00</span>
+  <input id="timeline-scrub" type="range" min="0" max="1000" value="0" step="1">
+  <span id="timeline-duration">0:00</span>
+</div>
+
+<script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+    }
+  }
+</script>
+
+<script type="module" src="js/bones/main.js"></script>
+</body>
+</html>
