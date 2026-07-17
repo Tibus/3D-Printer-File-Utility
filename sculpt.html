@@ -49,6 +49,15 @@
     <button class="tool-btn" data-tool="split" title="Découper l'objet avec un lasso (2 objets)">
       <span class="tool-emoji">✂️</span> Split
     </button>
+    <button class="tool-btn" data-tool="gizmo" title="Déplacer / tourner / redimensionner (Alt = déplacer le pivot)">
+      <span class="tool-emoji">🎯</span> Gizmo
+    </button>
+  </div>
+
+  <div id="gizmo-modes" class="undo-row" style="display:none; grid-template-columns:1fr 1fr 1fr;">
+    <button class="gizmo-mode active" data-mode="translate" title="Déplacer (W)">↔ Dépl.</button>
+    <button class="gizmo-mode" data-mode="rotate" title="Tourner (E)">⟳ Rot.</button>
+    <button class="gizmo-mode" data-mode="scale" title="Échelle (R)">⤢ Éch.</button>
   </div>
 
   <div class="undo-row">

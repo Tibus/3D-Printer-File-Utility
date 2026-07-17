@@ -300,6 +300,27 @@ body.dragging {
     gap: 8px;
 }
 
+.gizmo-mode {
+    padding: 8px 4px;
+    border: 1px solid #3a3a63;
+    border-radius: 8px;
+    background: #26264a;
+    color: #d7d7ea;
+    font-size: 12px;
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s;
+}
+
+.gizmo-mode:hover {
+    background: #30305c;
+}
+
+.gizmo-mode.active {
+    background: #22d3ee;
+    border-color: #22d3ee;
+    color: #06202a;
+}
+
 .export-row {
     display: grid;
     grid-template-columns: 1fr 1fr;

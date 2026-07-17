@@ -15,11 +15,13 @@ import {
 } from './brush.js';
 import { lassoSplitAsync } from './split.js';
 import { pushGeom, pushAction, undo, redo, setHistoryListener } from './history.js';
+import { initGizmo, activateGizmo, deactivateGizmo, setGizmoMode, setAltPivot, isGizmoActive } from './gizmo.js';
 import { exportGLB, exportOBJ } from './exporter.js';
 import { refreshWireframe, setStatus, showLoading, setProgress } from './ui.js';
 import { makeSquareAlpha, makeRoundAlpha, loadAlphaFromImage, renderAlphaPreview, makeFalloff, loadFalloffFromImage, renderFalloffPreview } from './alpha.js';
 
 initScene();
+initGizmo();
 state.alpha = makeSquareAlpha(); // forme du brush (défaut : carré)
 state.falloff = makeFalloff(state.params.falloffHardness); // falloff radial
 
@@ -161,7 +163,7 @@ function renderObjectList() {
     const name = document.createElement('span');
     name.className = 'obj-name';
     name.textContent = m.name;
-    name.addEventListener('click', () => { if (m.visible) { setActiveObject(m); renderObjectList(); } });
+    name.addEventListener('click', () => { if (m.visible) { setActiveObject(m); if (isGizmoActive()) activateGizmo(m); renderObjectList(); } });
 
     const eye = document.createElement('button');
     eye.className = 'obj-btn';
@@ -173,6 +175,7 @@ function renderObjectList() {
       if (!m.visible && state.targetMesh === m) {
         const n = state.objects.find((o) => o.visible);
         if (n) setActiveObject(n);
+        if (isGizmoActive()) { if (n) activateGizmo(n); else deactivateGizmo(); }
       }
       renderObjectList();
     });
@@ -184,6 +187,7 @@ function renderObjectList() {
     del.addEventListener('click', (ev) => {
       ev.stopPropagation();
       const wasActive = state.targetMesh === m;
+      if (isGizmoActive() && wasActive) deactivateGizmo();
       detachObject(m); renderObjectList(); // détache (undoable) au lieu de dispose
       pushAction(
         () => { attachObject(m); if (wasActive) setActiveObject(m); renderObjectList(); },
@@ -204,6 +208,7 @@ window.__objects = state.objects; // debug (comme window.__perf)
 
 dom.addEventListener('pointerdown', (e) => {
   if (e.button !== 0 || !state.targetMesh) return;
+  if (state.params.tool === 'gizmo') return; // TransformControls gère ses propres events
   if (state.params.tool === 'split') { startLasso(e); return; }
   setMouseFromEvent(e);
   const hit = raycastSurface();
@@ -237,7 +242,7 @@ function processMove() {
   pendingMods = null;
 
   if (!sculpting) {
-    if (state.params.tool === 'split') { state.brushMesh.visible = false; return; }
+    if (state.params.tool === 'split' || state.params.tool === 'gizmo') { state.brushMesh.visible = false; return; }
     updateBrushCursor(raycastSurface());
     return;
   }
@@ -289,7 +294,7 @@ dom.addEventListener('contextmenu', (e) => e.preventDefault());
 
 document.getElementById('model-input').addEventListener('change', (e) => {
   const file = e.target.files[0];
-  if (file) loadModelFromFile(file);
+  if (file) { deactivateGizmo(); loadModelFromFile(file); }
   e.target.value = '';
 });
 
@@ -314,9 +319,19 @@ toolButtons.forEach((btn) => {
     // L'inversion n'a de sens que pour le draw
     document.getElementById('invert-row').style.display =
       state.params.tool === 'draw' ? '' : 'none';
-    if (state.params.tool === 'split') state.brushMesh.visible = false;
+    const isGizmo = state.params.tool === 'gizmo';
+    if (state.params.tool === 'split' || isGizmo) state.brushMesh.visible = false;
+    if (isGizmo) activateGizmo(state.targetMesh); else deactivateGizmo();
+    document.getElementById('gizmo-modes').style.display = isGizmo ? '' : 'none';
   });
 });
+
+// Modes du gizmo (boutons + clavier partagent applyGizmoMode)
+function applyGizmoMode(mode) {
+  setGizmoMode(mode);
+  document.querySelectorAll('.gizmo-mode').forEach((b) => b.classList.toggle('active', b.dataset.mode === mode));
+}
+document.querySelectorAll('.gizmo-mode').forEach((b) => b.addEventListener('click', () => applyGizmoMode(b.dataset.mode)));
 
 // ---------- UI : sliders ----------
 
@@ -446,7 +461,7 @@ document.addEventListener('drop', (e) => {
   e.preventDefault();
   document.body.classList.remove('dragging');
   const file = e.dataTransfer.files[0];
-  if (file) loadModelFromFile(file);
+  if (file) { deactivateGizmo(); loadModelFromFile(file); }
 });
 
 // ---------- HUD de perf (touche P) ----------
@@ -464,8 +479,16 @@ document.addEventListener('keydown', (e) => {
   const mod = e.metaKey || e.ctrlKey;
   if (mod && (e.key === 'z' || e.key === 'Z')) { e.preventDefault(); if (e.shiftKey) redo(); else undo(); return; }
   if (mod && (e.key === 'y' || e.key === 'Y')) { e.preventDefault(); redo(); return; }
+  if (isGizmoActive()) {
+    if (e.key === 'Alt') { e.preventDefault(); setAltPivot(true); return; }
+    if (e.key === 'w' || e.key === 'W') { applyGizmoMode('translate'); return; }
+    if (e.key === 'e' || e.key === 'E') { applyGizmoMode('rotate'); return; }
+    if (e.key === 'r' || e.key === 'R') { applyGizmoMode('scale'); return; }
+  }
   if (e.key === 'p' || e.key === 'P') { perf.visible = !perf.visible; hud.style.display = perf.visible ? 'block' : 'none'; }
 });
+document.addEventListener('keyup', (e) => { if (e.key === 'Alt') setAltPivot(false); });
+window.addEventListener('blur', () => setAltPivot(false)); // sécurité si Alt "coince"
 
 // ---------- Boucle de rendu ----------
 
