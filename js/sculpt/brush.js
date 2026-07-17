@@ -52,6 +52,41 @@ let _accStamp = new Int32Array(0);
 let _accId = 0;
 export function beginStroke() { _accId++; }
 
+// ---------- Enregistrement pour l'undo (vertices touchés du stroke) ----------
+// On mémorise pos+normale d'origine des vertices touchés (1re fois), pour undo.
+let _recMesh = null, _recStamp = null, _recId = 0;
+const _recIdx = [], _recOld = [];
+export function recordStrokeBegin() {
+  _recMesh = state.targetMesh;
+  if (!_recMesh) return;
+  const n = _recMesh.geometry.attributes.position.count;
+  if (!_recStamp || _recStamp.length < n) _recStamp = new Uint32Array(n);
+  _recId++; _recIdx.length = 0; _recOld.length = 0;
+}
+function recordTouch(vi, pos, nor) {
+  if (!_recMesh || _recStamp[vi] === _recId) return;
+  _recStamp[vi] = _recId;
+  const v3 = vi * 3;
+  _recIdx.push(vi);
+  _recOld.push(pos[v3], pos[v3 + 1], pos[v3 + 2], nor[v3], nor[v3 + 1], nor[v3 + 2]);
+}
+// Renvoie { mesh, indices, old, new } (état après) ou null si rien touché.
+export function recordStrokeEnd() {
+  const mesh = _recMesh; _recMesh = null;
+  if (!mesh || _recIdx.length === 0) return null;
+  const g = mesh.geometry, pos = g.attributes.position.array, nor = g.attributes.normal.array;
+  const n = _recIdx.length;
+  const indices = new Uint32Array(_recIdx);
+  const old = Float32Array.from(_recOld);
+  const neu = new Float32Array(n * 6);
+  for (let k = 0; k < n; k++) {
+    const v3 = _recIdx[k] * 3, o = k * 6;
+    neu[o] = pos[v3]; neu[o + 1] = pos[v3 + 1]; neu[o + 2] = pos[v3 + 2];
+    neu[o + 3] = nor[v3]; neu[o + 4] = nor[v3 + 1]; neu[o + 5] = nor[v3 + 2];
+  }
+  return { mesh, indices, old, new: neu };
+}
+
 // Repère tangent du brush (une fois par stamp) pour projeter les vertices dans
 // l'empreinte carrée de l'alpha.
 let _tx = 0, _ty = 0, _tz = 0, _bx = 0, _by = 0, _bz = 0;
@@ -201,6 +236,9 @@ function applyStrokeAt(worldPoint, size, tool, intensity, invert) {
   collectInSphere(_localCenter, size);
   if (!_idxCount) return;
   if (P) { P.collect += performance.now() - t0; t0 = performance.now(); }
+
+  // undo : mémorise pos+normale d'origine des sommets des triangles touchés
+  if (_recMesh) { const idxA = geometry.index.array; for (let t = 0; t < _triCount; t++) { const o = _triArr[t] * 3; recordTouch(idxA[o], pos, nor); recordTouch(idxA[o + 1], pos, nor); recordTouch(idxA[o + 2], pos, nor); } }
 
   if (hasSeams) {
     applySeamStroke(pos, nor, tool, size, intensity, invert);
@@ -426,6 +464,9 @@ export function startGrab(hit) {
     touched.add(idxAttr[o]); touched.add(idxAttr[o + 1]); touched.add(idxAttr[o + 2]);
   }
   const ranges = buildRuns(touched);
+
+  // undo : mémorise pos+normale d'origine des sommets déplacés (avant le grab)
+  if (_recMesh) { const nor = geometry.attributes.normal.array; for (const vi of touched) recordTouch(vi, pos, nor); }
 
   const camDir = new THREE.Vector3();
   state.camera.getWorldDirection(camDir);

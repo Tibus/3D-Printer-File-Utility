@@ -289,6 +289,17 @@ body.dragging {
     background: #5a5a9a;
 }
 
+.control-btn:disabled {
+    opacity: 0.4;
+    cursor: default;
+}
+
+.undo-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+}
+
 .export-row {
     display: grid;
     grid-template-columns: 1fr 1fr;

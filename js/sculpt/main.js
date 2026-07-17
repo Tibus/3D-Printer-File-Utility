@@ -5,13 +5,16 @@ import { state } from './state.js';
 import { initScene } from './scene.js';
 import {
   loadModelFromFile, subdivideTarget,
-  createObject, setActiveObject, removeObject, setOnObjectsChanged,
+  createObject, setActiveObject, setOnObjectsChanged,
+  detachObject, attachObject, disposeObject,
 } from './loader.js';
 import {
   raycastSurface, updateBrushCursor, performStroke,
   startGrab, moveGrab, endGrab, beginStroke,
+  recordStrokeBegin, recordStrokeEnd,
 } from './brush.js';
 import { lassoSplitAsync } from './split.js';
+import { pushGeom, pushAction, undo, redo, setHistoryListener } from './history.js';
 import { exportGLB, exportOBJ } from './exporter.js';
 import { refreshWireframe, setStatus, showLoading, setProgress } from './ui.js';
 import { makeSquareAlpha, makeRoundAlpha, loadAlphaFromImage, renderAlphaPreview, makeFalloff, loadFalloffFromImage, renderFalloffPreview } from './alpha.js';
@@ -126,12 +129,17 @@ function performSplit() {
       // DoubleSide : l'orientation des parois n'est pas garantie.
       const matIn = mesh.material.clone(); matIn.side = THREE.DoubleSide;
       const matOut = mesh.material.clone(); matOut.side = THREE.DoubleSide;
-      createObject(res.inside, matIn);
+      const inMesh = createObject(res.inside, matIn);
       const outMesh = createObject(res.outside, matOut);
-      removeObject(mesh);
+      detachObject(mesh); // garde l'original pour l'undo (pas de dispose)
       setActiveObject(outMesh);
       renderObjectList();
       setStatus('Split effectué (2 objets).');
+      pushAction(
+        () => { detachObject(inMesh); detachObject(outMesh); attachObject(mesh); setActiveObject(mesh); renderObjectList(); },
+        () => { detachObject(mesh); attachObject(inMesh); attachObject(outMesh); setActiveObject(outMesh); renderObjectList(); },
+        () => { for (const m of [mesh, inMesh, outMesh]) if (!state.objects.includes(m)) disposeObject(m); },
+      );
     })
     .catch((err) => { console.error(err); setStatus(`Split : ${err.message}`); })
     .finally(() => { showLoading(false); setProgress(null); });
@@ -173,7 +181,16 @@ function renderObjectList() {
     del.className = 'obj-btn';
     del.textContent = '🗑';
     del.title = 'Supprimer';
-    del.addEventListener('click', (ev) => { ev.stopPropagation(); removeObject(m); renderObjectList(); });
+    del.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      const wasActive = state.targetMesh === m;
+      detachObject(m); renderObjectList(); // détache (undoable) au lieu de dispose
+      pushAction(
+        () => { attachObject(m); if (wasActive) setActiveObject(m); renderObjectList(); },
+        () => { detachObject(m); renderObjectList(); },
+        () => { if (!state.objects.includes(m)) disposeObject(m); },
+      );
+    });
 
     row.append(name, eye, del);
     list.appendChild(row);
@@ -196,6 +213,7 @@ dom.addEventListener('pointerdown', (e) => {
   setSculptResolution(true);
   state.controls.enabled = false;
   try { dom.setPointerCapture(e.pointerId); } catch (_) {}
+  recordStrokeBegin(); // undo : démarre la capture des vertices touchés
 
   if (state.params.tool === 'move') {
     if (!startGrab(hit)) { sculpting = false; state.controls.enabled = true; }
@@ -251,6 +269,7 @@ function endStroke(e) {
   setSculptResolution(false);
   state.controls.enabled = true;
   endGrab();
+  pushGeom(recordStrokeEnd()); // undo : enregistre le stroke terminé
   if (e && e.pointerId !== undefined) {
     try { dom.releasePointerCapture(e.pointerId); } catch (_) {}
   }
@@ -277,6 +296,13 @@ document.getElementById('model-input').addEventListener('change', (e) => {
 document.getElementById('export-glb-btn').addEventListener('click', exportGLB);
 document.getElementById('export-obj-btn').addEventListener('click', exportOBJ);
 document.getElementById('subdivide-btn').addEventListener('click', subdivideTarget);
+
+// Undo / redo
+const undoBtn = document.getElementById('undo-btn');
+const redoBtn = document.getElementById('redo-btn');
+undoBtn.addEventListener('click', undo);
+redoBtn.addEventListener('click', redo);
+setHistoryListener((cu, cr) => { undoBtn.disabled = !cu; redoBtn.disabled = !cr; });
 
 // ---------- UI : outils ----------
 
@@ -433,6 +459,11 @@ hud.id = 'perf-hud';
 hud.style.cssText = 'position:fixed;bottom:60px;left:20px;z-index:300;background:rgba(0,0,0,.75);color:#8f8;font:12px/1.5 ui-monospace,monospace;padding:8px 12px;border-radius:8px;white-space:pre;pointer-events:none;display:none';
 document.body.appendChild(hud);
 document.addEventListener('keydown', (e) => {
+  const tag = e.target && e.target.tagName;
+  if (tag === 'INPUT' || tag === 'TEXTAREA') return; // laisser l'undo natif des champs
+  const mod = e.metaKey || e.ctrlKey;
+  if (mod && (e.key === 'z' || e.key === 'Z')) { e.preventDefault(); if (e.shiftKey) redo(); else undo(); return; }
+  if (mod && (e.key === 'y' || e.key === 'Y')) { e.preventDefault(); redo(); return; }
   if (e.key === 'p' || e.key === 'P') { perf.visible = !perf.visible; hud.style.display = perf.visible ? 'block' : 'none'; }
 });
 

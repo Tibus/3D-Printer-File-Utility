@@ -15,6 +15,7 @@ import { STLLoader } from 'three/addons/loaders/STLLoader.js';
 import { FBXLoader } from 'three/addons/loaders/FBXLoader.js';
 import { mergeGeometries, mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 import { computeBoundsTree, disposeBoundsTree, acceleratedRaycast } from 'three-mesh-bvh';
+import { pushAction, clearHistory } from './history.js';
 import { state } from './state.js';
 import { setStatus, showLoading, refreshWireframe } from './ui.js';
 
@@ -327,7 +328,7 @@ export function setActiveObject(mesh) {
   refreshWireframe();
 }
 
-function disposeObject(mesh) {
+export function disposeObject(mesh) {
   mesh.traverse((o) => {
     if (o.isMesh) {
       if (o.geometry.boundsTree) o.geometry.disposeBoundsTree();
@@ -336,6 +337,23 @@ function disposeObject(mesh) {
     }
   });
   state.scene.remove(mesh);
+}
+
+// Retire de la scène + liste SANS libérer (pour pouvoir le restaurer via undo).
+export function detachObject(mesh) {
+  const i = state.objects.indexOf(mesh);
+  if (i >= 0) state.objects.splice(i, 1);
+  state.scene.remove(mesh);
+  if (state.targetMesh === mesh) setActiveObject(state.objects.find((o) => o.visible) || state.objects[0] || null);
+  _onObjectsChanged();
+}
+
+// Ré-ajoute un mesh précédemment détaché.
+export function attachObject(mesh) {
+  if (state.objects.includes(mesh)) return;
+  state.scene.add(mesh);
+  state.objects.push(mesh);
+  _onObjectsChanged();
 }
 
 export function removeObject(mesh) {
@@ -352,6 +370,7 @@ export function removeObject(mesh) {
 export function objectsChanged() { _onObjectsChanged(); }
 
 function disposeAllObjects() {
+  clearHistory();
   for (const m of state.objects) disposeObject(m);
   state.objects.length = 0;
   state.targetMesh = null;
@@ -588,12 +607,17 @@ export function subdivideTarget() {
     g.attributes.position.setUsage(THREE.DynamicDrawUsage);
     g.attributes.normal.setUsage(THREE.DynamicDrawUsage);
 
-    // Remplace uniquement l'objet actif (garde les autres).
+    // Remplace uniquement l'objet actif (garde les autres). Annulable.
     const oldMesh = state.targetMesh;
     const mesh = createObject(g, sourceMat.clone());
-    removeObject(oldMesh);
+    detachObject(oldMesh);
     setActiveObject(mesh);
     objectsChanged();
+    pushAction(
+      () => { detachObject(mesh); attachObject(oldMesh); setActiveObject(oldMesh); },
+      () => { detachObject(oldMesh); attachObject(mesh); setActiveObject(mesh); },
+      () => { for (const m of [oldMesh, mesh]) if (!state.objects.includes(m)) disposeObject(m); },
+    );
     setStatus(`Subdivisé — ${g.attributes.position.count.toLocaleString()} vertices, ${(g.index.count / 3).toLocaleString()} triangles`);
     showLoading(false);
   }));
