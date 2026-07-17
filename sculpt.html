@@ -4,6 +4,9 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Sculpt - 3D Printer File Utility</title>
+  <!-- Active cross-origin isolation (SharedArrayBuffer) pour le split multi-worker,
+       même sur GitHub Pages. Recharge la page une fois au 1er chargement. -->
+  <script src="coi-serviceworker.js"></script>
   <link rel="stylesheet" href="sculpt.css">
 </head>
 <body>
@@ -114,8 +117,8 @@
   <div class="param">
     <label>
       <span class="param-label">Détail coupe</span>
-      <input type="range" id="cutdetail-range" min="1" max="24" value="6" step="1">
-      <span class="param-val" id="cutdetail-val">6</span>
+      <input type="range" id="cutdetail-range" min="1" max="24" value="10" step="1">
+      <span class="param-val" id="cutdetail-val">10</span>
     </label>
   </div>
 
@@ -141,7 +144,8 @@
 
 <div id="loading">
   <div class="spinner"></div>
-  <p>Chargement...</p>
+  <p id="loading-text">Chargement...</p>
+  <div id="progress-bar"><div id="progress-fill"></div></div>
 </div>
 
 <!-- Parseur 3MF du viewer (Bambu / Prusa : MMU, composants, transforms).
@@ -155,8 +159,7 @@
     "imports": {
       "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
       "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/",
-      "three-mesh-bvh": "https://cdn.jsdelivr.net/npm/three-mesh-bvh@0.7.8/build/index.module.js",
-      "three-bvh-csg": "https://cdn.jsdelivr.net/npm/three-bvh-csg@0.0.16/build/index.module.js"
+      "three-mesh-bvh": "https://cdn.jsdelivr.net/npm/three-mesh-bvh@0.7.8/build/index.module.js"
     }
   }
 </script>

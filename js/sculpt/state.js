@@ -49,7 +49,7 @@ export const state = {
     symmetryX: false,
     displayHelper: false,     // afficher le wireframe / bvh helper
     falloffHardness: 0.5,     // dureté du bord (0 = très doux, 1 = net)
-    cutDetail: 6,             // subdivisions en profondeur des parois du split
+    cutDetail: 10,            // finesse du retopo du cap (×10 cellules sur la diagonale)
   },
 
   // Alpha du brush : { grid: Float32Array(n*n), n, name } — forme du coup.

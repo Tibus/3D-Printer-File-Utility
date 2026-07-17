@@ -1,5 +1,6 @@
 // Point d'entrée : init scène, wiring UI + événements pointeur, boucle de rendu.
 
+import * as THREE from 'three';
 import { state } from './state.js';
 import { initScene } from './scene.js';
 import {
@@ -10,9 +11,9 @@ import {
   raycastSurface, updateBrushCursor, performStroke,
   startGrab, moveGrab, endGrab, beginStroke,
 } from './brush.js';
-import { lassoSplit } from './split.js';
+import { lassoSplitAsync } from './split.js';
 import { exportGLB, exportOBJ } from './exporter.js';
-import { refreshWireframe, setStatus, showLoading } from './ui.js';
+import { refreshWireframe, setStatus, showLoading, setProgress } from './ui.js';
 import { makeSquareAlpha, makeRoundAlpha, loadAlphaFromImage, renderAlphaPreview, makeFalloff, loadFalloffFromImage, renderFalloffPreview } from './alpha.js';
 
 initScene();
@@ -116,27 +117,24 @@ function performSplit() {
   const poly = lassoPts.map((p) => ({ x: p.x - rect.left, y: p.y - rect.top }));
   mesh.updateMatrixWorld(true);
 
-  // Spinner pendant le boolean (bloquant) : on laisse la frame s'afficher d'abord.
-  showLoading(true);
-  requestAnimationFrame(() => requestAnimationFrame(() => {
-    let res;
-    try {
-      res = lassoSplit(mesh.geometry, poly, state.camera, mesh.matrixWorld, rect.width, rect.height, state.params.cutDetail);
-    } catch (err) {
-      console.error(err);
-      setStatus(`Split : ${err.message}`);
-      showLoading(false);
-      return;
-    }
-    if (!res) { setStatus('Le lasso n’a rien séparé.'); showLoading(false); return; }
-    createObject(res.inside, mesh.material.clone());
-    const outMesh = createObject(res.outside, mesh.material.clone());
-    removeObject(mesh);
-    setActiveObject(outMesh);
-    renderObjectList();
-    setStatus('Split effectué (2 objets).');
-    showLoading(false);
-  }));
+  // Le split tourne dans un worker : thread principal libre, barre de progression.
+  showLoading(true, 'Découpe...');
+  setProgress(0);
+  lassoSplitAsync(mesh.geometry, poly, state.camera, mesh.matrixWorld, rect.width, rect.height, state.params.cutDetail, setProgress)
+    .then((res) => {
+      if (!res) { setStatus('Le lasso n’a rien séparé.'); return; }
+      // DoubleSide : l'orientation des parois n'est pas garantie.
+      const matIn = mesh.material.clone(); matIn.side = THREE.DoubleSide;
+      const matOut = mesh.material.clone(); matOut.side = THREE.DoubleSide;
+      createObject(res.inside, matIn);
+      const outMesh = createObject(res.outside, matOut);
+      removeObject(mesh);
+      setActiveObject(outMesh);
+      renderObjectList();
+      setStatus('Split effectué (2 objets).');
+    })
+    .catch((err) => { console.error(err); setStatus(`Split : ${err.message}`); })
+    .finally(() => { showLoading(false); setProgress(null); });
 }
 
 // ---------- Liste d'objets ----------
@@ -354,7 +352,7 @@ bindSlider('size-range', 'size-num', 'size', (v) => v.toFixed(3));
   });
 }
 
-// Détail de la découpe (subdivisions en profondeur des parois du split).
+// Détail des parois du split (subdivisions en profondeur).
 {
   const range = document.getElementById('cutdetail-range');
   const val = document.getElementById('cutdetail-val');
