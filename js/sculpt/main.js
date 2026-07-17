@@ -26,6 +26,15 @@ state.alpha = makeSquareAlpha(); // forme du brush (défaut : carré)
 state.falloff = makeFalloff(state.params.falloffHardness); // falloff radial
 
 const dom = state.renderer.domElement;
+
+// Ajustement du rayon du brush en maintenant X : la souris change le diamètre.
+let radiusMode = false, radiusStartX = 0, radiusStartSize = 0, radiusAnchor = null, lastClientX = 0;
+const RADIUS_PER_PX = 0.0012; // vitesse d'ajustement (unités monde / pixel)
+function setBrushSize(v) {
+  const r = document.getElementById('size-range'), num = document.getElementById('size-num');
+  v = Math.max(parseFloat(r.min), Math.min(parseFloat(r.max), v));
+  state.params.size = v; r.value = v; num.value = v.toFixed(3);
+}
 let sculpting = false;   // un stroke est en cours (pointerdown démarré sur le mesh)
 
 // ---------- Résolution dynamique (pendant le sculpt uniquement) ----------
@@ -208,6 +217,7 @@ window.__objects = state.objects; // debug (comme window.__perf)
 
 dom.addEventListener('pointerdown', (e) => {
   if (e.button !== 0 || !state.targetMesh) return;
+  if (radiusMode) return; // réglage du rayon en cours (X maintenu)
   if (state.params.tool === 'gizmo') return; // TransformControls gère ses propres events
   if (state.params.tool === 'split') { startLasso(e); return; }
   setMouseFromEvent(e);
@@ -258,6 +268,12 @@ function processMove() {
 }
 
 dom.addEventListener('pointermove', (e) => {
+  lastClientX = e.clientX;
+  if (radiusMode) { // X maintenu : la souris règle le rayon du brush
+    setBrushSize(radiusStartSize + (e.clientX - radiusStartX) * RADIUS_PER_PX);
+    if (radiusAnchor) updateBrushCursor(radiusAnchor, false);
+    return;
+  }
   if (lassoing) { addLassoPoint(e); return; }
   setMouseFromEvent(e);
   pendingMods = modifiersFor(e);
@@ -485,10 +501,33 @@ document.addEventListener('keydown', (e) => {
     if (e.key === 'e' || e.key === 'E') { applyGizmoMode('rotate'); return; }
     if (e.key === 'r' || e.key === 'R') { applyGizmoMode('scale'); return; }
   }
+  if ((e.key === 'x' || e.key === 'X') && !e.repeat) { enterRadiusMode(); return; }
   if (e.key === 'p' || e.key === 'P') { perf.visible = !perf.visible; hud.style.display = perf.visible ? 'block' : 'none'; }
 });
-document.addEventListener('keyup', (e) => { if (e.key === 'Alt') setAltPivot(false); });
-window.addEventListener('blur', () => setAltPivot(false)); // sécurité si Alt "coince"
+document.addEventListener('keyup', (e) => {
+  if (e.key === 'Alt') setAltPivot(false);
+  if (e.key === 'x' || e.key === 'X') exitRadiusMode();
+});
+window.addEventListener('blur', () => { setAltPivot(false); exitRadiusMode(); }); // sécurité si une touche "coince"
+
+// X maintenu : la souris règle le rayon du brush (relâcher = retour normal).
+function enterRadiusMode() {
+  if (radiusMode || !state.targetMesh) return;
+  const t = state.params.tool;
+  if (t === 'split' || t === 'gizmo' || t === 'move') return; // sans objet de brush
+  radiusMode = true;
+  radiusStartX = lastClientX;
+  radiusStartSize = state.params.size;
+  radiusAnchor = raycastSurface(); // point figé sous le curseur
+  state.controls.enabled = false;
+  if (radiusAnchor) { state.brushMesh.visible = true; updateBrushCursor(radiusAnchor, false); }
+  setStatus(`Rayon : ${state.params.size.toFixed(3)} — bouge la souris, relâche X`);
+}
+function exitRadiusMode() {
+  if (!radiusMode) return;
+  radiusMode = false; radiusAnchor = null;
+  if (!sculpting) state.controls.enabled = true;
+}
 
 // ---------- Boucle de rendu ----------
 
