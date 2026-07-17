@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sculpt - 3D Printer File Utility</title>
+  <link rel="stylesheet" href="sculpt.css">
+</head>
+<body>
+<div id="canvas-container"></div>
+
+<!-- Panneau haut-gauche : navigation + chargement -->
+<div id="top-left">
+  <a href="index.html" class="sculpt-back-link">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <path d="M19 12H5M12 19l-7-7 7-7"/>
+    </svg>
+    Retour
+  </a>
+
+  <label id="model-input-label" class="file-input-label">
+    📁 Charger un modèle
+    <input type="file" id="model-input" class="file-input" accept=".glb,.gltf,.obj,.stl,.fbx,.3mf">
+  </label>
+
+  <div id="status">Chargez un modèle pour commencer.</div>
+</div>
+
+<!-- Panneau droit : outils de sculpture -->
+<div id="tool-panel">
+  <h3>🗿 Sculpt</h3>
+
+  <div class="tool-grid">
+    <button class="tool-btn active" data-tool="draw" title="Ajouter / Retirer de la matière">
+      <span class="tool-emoji">➕</span> Draw
+    </button>
+    <button class="tool-btn" data-tool="smooth" title="Lisser la surface (raccourci : Shift)">
+      <span class="tool-emoji">💧</span> Smooth
+    </button>
+    <button class="tool-btn" data-tool="flatten" title="Aplatir vers le plan moyen">
+      <span class="tool-emoji">🪓</span> Flatten
+    </button>
+    <button class="tool-btn" data-tool="move" title="Déplacer la matière (grab)">
+      <span class="tool-emoji">✋</span> Move
+    </button>
+    <button class="tool-btn" data-tool="split" title="Découper l'objet avec un lasso (2 objets)">
+      <span class="tool-emoji">✂️</span> Split
+    </button>
+  </div>
+
+  <div class="param">
+    <label>
+      <span class="param-label">Taille</span>
+      <input type="range" id="size-range" min="0.02" max="0.6" value="0.12" step="0.005">
+      <input type="number" id="size-num" min="0.02" max="0.6" value="0.12" step="0.005">
+    </label>
+  </div>
+
+  <div class="param">
+    <label>
+      <span class="param-label">Intensité</span>
+      <input type="range" id="intensity-range" min="1" max="200" value="100" step="1">
+      <span class="param-val" id="intensity-val">100%</span>
+    </label>
+  </div>
+
+  <div class="param">
+    <label>
+      <span class="param-label">Dureté</span>
+      <input type="range" id="hardness-range" min="0" max="100" value="50" step="1">
+      <span class="param-val" id="hardness-val">50%</span>
+    </label>
+  </div>
+
+  <div class="alpha-row">
+    <span class="param-label">Falloff</span>
+    <div class="alpha-controls">
+      <canvas id="falloff-preview" width="60" height="30" title="Courbe de falloff (centre → bord)"></canvas>
+      <label class="alpha-import" title="Importer une image de falloff (gauche = centre, droite = bord)">
+        ＋<input type="file" id="falloff-input" accept="image/*">
+      </label>
+    </div>
+  </div>
+
+  <div class="alpha-row">
+    <span class="param-label">Alpha</span>
+    <div class="alpha-controls">
+      <canvas id="alpha-preview" width="36" height="36" title="Alpha courant"></canvas>
+      <button class="alpha-btn active" data-alpha="square" title="Carré flou">▧</button>
+      <button class="alpha-btn" data-alpha="round" title="Rond">⬤</button>
+      <label class="alpha-import" title="Importer une image (niveaux de gris)">
+        ＋<input type="file" id="alpha-input" accept="image/*">
+      </label>
+    </div>
+  </div>
+
+  <div class="checks">
+    <label class="check" id="invert-row">
+      <input type="checkbox" id="invert-check">
+      <span>Inverser (retirer)</span>
+    </label>
+    <label class="check">
+      <input type="checkbox" id="symmetry-check">
+      <span>Symétrie X</span>
+    </label>
+    <label class="check">
+      <input type="checkbox" id="wireframe-check">
+      <span>Wireframe</span>
+    </label>
+  </div>
+
+  <button id="subdivide-btn" class="control-btn">🔺 Subdiviser (ajouter du détail)</button>
+
+  <div class="param">
+    <label>
+      <span class="param-label">Détail coupe</span>
+      <input type="range" id="cutdetail-range" min="1" max="24" value="6" step="1">
+      <span class="param-val" id="cutdetail-val">6</span>
+    </label>
+  </div>
+
+  <div class="obj-section">
+    <div class="obj-title">Objets</div>
+    <div id="object-list"></div>
+  </div>
+
+  <div class="export-row">
+    <button id="export-glb-btn" class="control-btn">💾 GLB</button>
+    <button id="export-obj-btn" class="control-btn">💾 OBJ</button>
+  </div>
+
+  <div id="hint">
+    <strong>Clic gauche + glisser</strong> pour sculpter.<br>
+    <strong>Shift</strong> = lissage temporaire · <strong>Ctrl/Cmd</strong> = inverser le Draw.<br>
+    <strong>Split</strong> : trace un lasso fermé pour couper l'objet en deux.<br>
+    Orbite / zoom quand on part d'un clic dans le vide.
+  </div>
+</div>
+
+<svg id="lasso-overlay"><polyline id="lasso-path" /></svg>
+
+<div id="loading">
+  <div class="spinner"></div>
+  <p>Chargement...</p>
+</div>
+
+<!-- Parseur 3MF du viewer (Bambu / Prusa : MMU, composants, transforms).
+     Scripts classiques exposant window.parse3MF, chargés avant le module. -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script src="js/Color.js"></script>
+<script src="js/3mfParser.js"></script>
+
+<script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/",
+      "three-mesh-bvh": "https://cdn.jsdelivr.net/npm/three-mesh-bvh@0.7.8/build/index.module.js",
+      "three-bvh-csg": "https://cdn.jsdelivr.net/npm/three-bvh-csg@0.0.16/build/index.module.js"
+    }
+  }
+</script>
+
+<script type="module" src="js/sculpt/main.js"></script>
+</body>
+</html>
