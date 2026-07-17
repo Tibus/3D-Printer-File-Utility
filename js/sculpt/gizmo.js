@@ -6,7 +6,8 @@
 import * as THREE from 'three';
 import { TransformControls } from 'three/addons/controls/TransformControls.js';
 import { state } from './state.js';
-import { pushAction } from './history.js';
+import { pushAction, pushGeom } from './history.js';
+import { hasMask, getMask } from './mask.js';
 
 let tc = null;          // TransformControls
 let pivot = null;       // groupe-pivot (parent temporaire du mesh)
@@ -52,12 +53,47 @@ export function initGizmo() {
     if (altMode || !currentMesh || !before) return;
     const after = worldTRS(currentMesh);
     if (after.p.equals(before.p) && after.q.equals(before.q) && after.s.equals(before.s)) { normalizePivot(); return; }
+    if (hasMask(currentMesh.geometry)) { bakeMaskedTransform(currentMesh, before, after); return; } // déformation pondérée
     const mesh = currentMesh, b = before, a = after;
     normalizePivot();
     pushAction(() => applyWorldTRS(mesh, b), () => applyWorldTRS(mesh, a));
   });
   state.scene.add(tc);
   tc.visible = false; tc.enabled = false;
+}
+
+// Avec un masque : au lieu d'un transform matriciel, on DÉFORME chaque sommet
+// pondéré par (1-masque) et on le cuit dans la géométrie (les sommets masqués
+// restent). Le mesh revient à son repère d'avant-drag. Annulable (geom).
+function bakeMaskedTransform(mesh, before, after) {
+  const geom = mesh.geometry;
+  const mask = getMask(geom);
+  const pos = geom.attributes.position.array, nor = geom.attributes.normal.array;
+  const beforeM = new THREE.Matrix4().compose(before.p, before.q, before.s);
+  const afterM = new THREE.Matrix4().compose(after.p, after.q, after.s);
+  const beforeInv = beforeM.clone().invert();
+  state.scene.attach(mesh); // world courant = afterM ; géométrie locale = originale
+
+  const wB = new THREE.Vector3(), wF = new THREE.Vector3(), lN = new THREE.Vector3();
+  const idxArr = [], oldA = [];
+  for (let i = 0; i < mask.length; i++) {
+    const w = 1 - mask[i]; if (w <= 0.001) continue;
+    const v3 = i * 3, lx = pos[v3], ly = pos[v3 + 1], lz = pos[v3 + 2];
+    wB.set(lx, ly, lz).applyMatrix4(beforeM);
+    wF.set(lx, ly, lz).applyMatrix4(afterM);
+    lN.set(wB.x + (wF.x - wB.x) * w, wB.y + (wF.y - wB.y) * w, wB.z + (wF.z - wB.z) * w).applyMatrix4(beforeInv);
+    idxArr.push(i); oldA.push(lx, ly, lz, nor[v3], nor[v3 + 1], nor[v3 + 2]);
+    pos[v3] = lN.x; pos[v3 + 1] = lN.y; pos[v3 + 2] = lN.z;
+  }
+  mesh.position.copy(before.p); mesh.quaternion.copy(before.q); mesh.scale.copy(before.s); mesh.updateMatrixWorld(true);
+  geom.attributes.position.needsUpdate = true;
+  geom.computeVertexNormals();
+  if (geom.boundsTree) geom.boundsTree.refit();
+
+  const indices = new Uint32Array(idxArr), old = Float32Array.from(oldA), neu = new Float32Array(indices.length * 6);
+  for (let k = 0; k < indices.length; k++) { const v3 = indices[k] * 3, o = k * 6; neu[o] = pos[v3]; neu[o + 1] = pos[v3 + 1]; neu[o + 2] = pos[v3 + 2]; neu[o + 3] = nor[v3]; neu[o + 4] = nor[v3 + 1]; neu[o + 5] = nor[v3 + 2]; }
+  pushGeom({ mesh, indices, old, new: neu });
+  activateGizmo(mesh); // pivot frais au nouvel état
 }
 
 export function activateGizmo(mesh) {

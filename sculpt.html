@@ -52,6 +52,23 @@
     <button class="tool-btn" data-tool="gizmo" title="Déplacer / tourner / redimensionner (Alt = déplacer le pivot)">
       <span class="tool-emoji">🎯</span> Gizmo
     </button>
+    <button class="tool-btn" data-tool="mask" title="Masquer des zones (protégées des autres outils). Ctrl/Cmd = démasquer">
+      <span class="tool-emoji">🛡️</span> Masque
+    </button>
+  </div>
+
+  <div id="mask-panel" style="display:none; flex-direction:column; gap:10px;">
+    <div class="undo-row">
+      <button id="mask-invert" class="control-btn" title="Inverser le masque">⇄ Inverser</button>
+      <button id="mask-clear" class="control-btn" title="Tout démasquer">✕ Effacer</button>
+    </div>
+    <div class="param">
+      <label>
+        <span class="param-label">Flou</span>
+        <input type="range" id="maskblur-range" min="0" max="30" value="0" step="1">
+        <span class="param-val" id="maskblur-val">0</span>
+      </label>
+    </div>
   </div>
 
   <div id="gizmo-modes" class="undo-row" style="display:none; grid-template-columns:1fr 1fr 1fr;">

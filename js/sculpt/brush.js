@@ -8,6 +8,7 @@
 import * as THREE from 'three';
 import { CONTAINED, INTERSECTED, NOT_INTERSECTED } from 'three-mesh-bvh';
 import { state } from './state.js';
+import { ensureMask, getMask, maskRecordTouch } from './mask.js';
 
 const _raycaster = new THREE.Raycaster();
 _raycaster.firstHitOnly = true;
@@ -237,13 +238,17 @@ function applyStrokeAt(worldPoint, size, tool, intensity, invert) {
   if (!_idxCount) return;
   if (P) { P.collect += performance.now() - t0; t0 = performance.now(); }
 
+  // Outil de masquage : peint le masque, pas la position.
+  if (tool === 'mask') { applyMaskStroke(geometry, size, intensity, invert); return; }
+
   // undo : mémorise pos+normale d'origine des sommets des triangles touchés
   if (_recMesh) { const idxA = geometry.index.array; for (let t = 0; t < _triCount; t++) { const o = _triArr[t] * 3; recordTouch(idxA[o], pos, nor); recordTouch(idxA[o + 1], pos, nor); recordTouch(idxA[o + 2], pos, nor); } }
 
+  const mask = getMask(geometry); // influence : les sommets masqués ne bougent pas
   if (hasSeams) {
-    applySeamStroke(pos, nor, tool, size, intensity, invert);
+    applySeamStroke(pos, nor, tool, size, intensity, invert, mask);
   } else {
-    applyFastStroke(pos, nor, tool, size, intensity, invert, neighbors);
+    applyFastStroke(pos, nor, tool, size, intensity, invert, neighbors, mask);
   }
   if (_range.max < 0) return;
   const posMin = _range.min, posMax = _range.max;
@@ -266,7 +271,7 @@ function applyStrokeAt(worldPoint, size, tool, intensity, invert) {
 }
 
 // Chemin rapide (pas de coutures) : tout en accès brut sur les Float32Array.
-function applyFastStroke(pos, nor, tool, size, intensity, invert, neighbors) {
+function applyFastStroke(pos, nor, tool, size, intensity, invert, neighbors, mask) {
   // Normale + point moyens
   let nx = 0, ny = 0, nz = 0, px = 0, py = 0, pz = 0;
   for (let i = 0; i < _idxCount; i++) {
@@ -295,8 +300,10 @@ function applyFastStroke(pos, nor, tool, size, intensity, invert, neighbors) {
   resetRange();
   for (let i = 0; i < _idxCount; i++) {
     const v = _idxArr[i];
+    if (mask && mask[v] >= 0.999) continue; // entièrement masqué
     const v3 = v * 3;
     let x = pos[v3], y = pos[v3 + 1], z = pos[v3 + 2];
+    const ox = x, oy = y, oz = z;
     const rx = x - lcx, ry = y - lcy, rz = z - lcz;
     const uu = (rx * tx + ry * ty + rz * tz) * invSize * 0.5 + 0.5;
     const vv = (rx * bx + ry * by + rz * bz) * invSize * 0.5 + 0.5;
@@ -330,14 +337,50 @@ function applyFastStroke(pos, nor, tool, size, intensity, invert, neighbors) {
       }
     }
 
+    if (mask) { const w = 1 - mask[v]; x = ox + (x - ox) * w; y = oy + (y - oy) * w; z = oz + (z - oz) * w; } // influence partielle
     pos[v3] = x; pos[v3 + 1] = y; pos[v3 + 2] = z;
     if (v < _range.min) _range.min = v;
     if (v > _range.max) _range.max = v;
   }
 }
 
+// Peinture du masque (même collecte/falloff que les brosses).
+function applyMaskStroke(geometry, size, intensity, invert) {
+  ensureMask(geometry, state.targetMesh.material);
+  const sharp = geometry.userData.maskSharp;
+  const marr = geometry.attributes.mask.array;
+  const pos = geometry.attributes.position.array, nor = geometry.attributes.normal.array;
+  // normale moyenne -> repère tangent (empreinte alpha), comme applyFastStroke
+  let nx = 0, ny = 0, nz = 0;
+  for (let i = 0; i < _idxCount; i++) { const v3 = _idxArr[i] * 3; nx += nor[v3]; ny += nor[v3 + 1]; nz += nor[v3 + 2]; }
+  const nl = Math.sqrt(nx * nx + ny * ny + nz * nz) || 1; nx /= nl; ny /= nl; nz /= nl;
+  brushFrame(nx, ny, nz);
+  const tx = _tx, ty = _ty, tz = _tz, bx = _bx, by = _by, bz = _bz;
+  const lcx = _localCenter.x, lcy = _localCenter.y, lcz = _localCenter.z;
+  const invSize = 1 / size, sign = invert ? -1 : 1, str = (intensity / 100) * 0.35;
+  const alpha = state.alpha, an = alpha.n, agrid = alpha.grid;
+  const flut = state.falloff, fn1 = flut.length - 1;
+  let vmin = Infinity, vmax = -1;
+  for (let i = 0; i < _idxCount; i++) {
+    const v = _idxArr[i], v3 = v * 3;
+    const rx = pos[v3] - lcx, ry = pos[v3 + 1] - lcy, rz = pos[v3 + 2] - lcz;
+    const uu = (rx * tx + ry * ty + rz * tz) * invSize * 0.5 + 0.5;
+    const vv = (rx * bx + ry * by + rz * bz) * invSize * 0.5 + 0.5;
+    if (uu < 0 || uu >= 1 || vv < 0 || vv >= 1) continue;
+    const du = uu - 0.5, dv = vv - 0.5;
+    let rr = Math.sqrt(du * du + dv * dv) * 2; if (rr > 1) rr = 1;
+    const f = agrid[((vv * an) | 0) * an + ((uu * an) | 0)] * flut[(rr * fn1) | 0];
+    if (f <= 0) continue;
+    maskRecordTouch(v);
+    let m = sharp[v] + f * str * sign; if (m < 0) m = 0; else if (m > 1) m = 1;
+    sharp[v] = m; marr[v] = m; // net (flou appliqué en fin de stroke)
+    if (v < vmin) vmin = v; if (v > vmax) vmax = v;
+  }
+  if (vmax >= 0) markUpdateRange(geometry.attributes.mask, vmin, vmax);
+}
+
 // Chemin coutures : opère sur les représentants, écrit sur tous les membres.
-function applySeamStroke(pos, nor, tool, size, intensity, invert) {
+function applySeamStroke(pos, nor, tool, size, intensity, invert, mask) {
   const rep = state.rep;
   const groupMembers = state.groupMembers;
   _reps.clear();
@@ -369,8 +412,10 @@ function applySeamStroke(pos, nor, tool, size, intensity, invert) {
 
   resetRange();
   _reps.forEach((r) => {
+    if (mask && mask[r] >= 0.999) return; // entièrement masqué
     const v3 = r * 3;
     let x = pos[v3], y = pos[v3 + 1], z = pos[v3 + 2];
+    const ox = x, oy = y, oz = z;
     const rx = x - lcx, ry = y - lcy, rz = z - lcz;
     const uu = (rx * tx + ry * ty + rz * tz) * invSize * 0.5 + 0.5;
     const vv = (rx * bx + ry * by + rz * bz) * invSize * 0.5 + 0.5;
@@ -400,6 +445,7 @@ function applySeamStroke(pos, nor, tool, size, intensity, invert) {
       }
     }
 
+    if (mask) { const w = 1 - mask[r]; x = ox + (x - ox) * w; y = oy + (y - oy) * w; z = oz + (z - oz) * w; }
     const members = groupMembers.get(r);
     if (members) {
       for (let k = 0; k < members.length; k++) { const m3 = members[k] * 3; pos[m3] = x; pos[m3 + 1] = y; pos[m3 + 2] = z; track(members[k]); }
@@ -443,6 +489,7 @@ export function startGrab(hit) {
   const arr = Int32Array.from(affected);
   const weights = new Float32Array(arr.length);
   const startPositions = new Float32Array(arr.length * 3);
+  const mask = getMask(geometry); // les sommets masqués ne bougent pas (poids × (1-masque))
   const lcx = _localCenter.x, lcy = _localCenter.y, lcz = _localCenter.z;
   for (let k = 0; k < arr.length; k++) {
     const v3 = arr[k] * 3;
@@ -451,7 +498,7 @@ export function startGrab(hit) {
     const dx = x - lcx, dy = y - lcy, dz = z - lcz;
     let f = 1 - Math.sqrt(dx * dx + dy * dy + dz * dz) / size;
     f = Math.max(0, f);
-    weights[k] = f * f * (3 - 2 * f);
+    weights[k] = f * f * (3 - 2 * f) * (mask ? 1 - mask[arr[k]] : 1);
   }
 
   // Triangles touchés (snapshot) pour recalcul des normales pendant le drag

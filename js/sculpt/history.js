@@ -4,6 +4,8 @@
 // - Opérations structurelles (split, subdivision, suppression) : deux closures
 //   undo/redo + un dispose optionnel (libère les meshes retenus à l'éviction).
 
+import { rebuildMask } from './mask.js';
+
 const MAX = 30;
 const undoStack = [];
 const redoStack = [];
@@ -28,6 +30,17 @@ export function pushGeom(change) { if (change && change.indices.length) pushEntr
 // undoFn/redoFn : callbacks ; dispose : libère les meshes retenus non réutilisés
 export function pushAction(undoFn, redoFn, dispose) { pushEntry({ type: 'action', undoFn, redoFn, dispose }); }
 
+// change : { geometry, indices, old, new } sur le masque net (maskSharp)
+export function pushMask(change) { if (change && change.indices.length) pushEntry({ type: 'mask', ...change }); }
+
+function applyMask(e, useNew) {
+  const sharp = e.geometry.userData && e.geometry.userData.maskSharp;
+  if (!sharp) return;
+  const src = useNew ? e.new : e.old, idx = e.indices;
+  for (let k = 0; k < idx.length; k++) sharp[idx[k]] = src[k];
+  rebuildMask(e.geometry);
+}
+
 function applyGeom(e, useNew) {
   const g = e.mesh.geometry;
   if (!g || !g.attributes.position) return;
@@ -45,13 +58,13 @@ function applyGeom(e, useNew) {
 
 export function undo() {
   const e = undoStack.pop(); if (!e) return;
-  if (e.type === 'geom') applyGeom(e, false); else e.undoFn();
+  if (e.type === 'geom') applyGeom(e, false); else if (e.type === 'mask') applyMask(e, false); else e.undoFn();
   redoStack.push(e); fire();
 }
 
 export function redo() {
   const e = redoStack.pop(); if (!e) return;
-  if (e.type === 'geom') applyGeom(e, true); else e.redoFn();
+  if (e.type === 'geom') applyGeom(e, true); else if (e.type === 'mask') applyMask(e, true); else e.redoFn();
   undoStack.push(e); fire();
 }
 

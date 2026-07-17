@@ -325,6 +325,7 @@ export function setActiveObject(mesh) {
   state.rep = topo.rep;
   state.groupMembers = topo.groupMembers;
   state.repNeighbors = topo.repNeighbors;
+  mesh.geometry.userData.neighbors = topo.neighbors; // pour le flou du masque
   refreshWireframe();
 }
 

@@ -14,8 +14,9 @@ import {
   recordStrokeBegin, recordStrokeEnd,
 } from './brush.js';
 import { lassoSplitAsync } from './split.js';
-import { pushGeom, pushAction, undo, redo, setHistoryListener } from './history.js';
+import { pushGeom, pushAction, pushMask, undo, redo, setHistoryListener } from './history.js';
 import { initGizmo, activateGizmo, deactivateGizmo, setGizmoMode, setAltPivot, isGizmoActive } from './gizmo.js';
+import { ensureMask, invertMask, clearMask, setMaskBlur, rebuildMask, maskRecordBegin, maskRecordEnd } from './mask.js';
 import { exportGLB, exportOBJ } from './exporter.js';
 import { refreshWireframe, setStatus, showLoading, setProgress } from './ui.js';
 import { makeSquareAlpha, makeRoundAlpha, loadAlphaFromImage, renderAlphaPreview, makeFalloff, loadFalloffFromImage, renderFalloffPreview } from './alpha.js';
@@ -228,7 +229,8 @@ dom.addEventListener('pointerdown', (e) => {
   setSculptResolution(true);
   state.controls.enabled = false;
   try { dom.setPointerCapture(e.pointerId); } catch (_) {}
-  recordStrokeBegin(); // undo : démarre la capture des vertices touchés
+  if (state.params.tool === 'mask') { ensureMask(state.targetMesh.geometry, state.targetMesh.material); maskRecordBegin(state.targetMesh.geometry); }
+  else recordStrokeBegin(); // undo : démarre la capture des vertices touchés
 
   if (state.params.tool === 'move') {
     if (!startGrab(hit)) { sculpting = false; state.controls.enabled = true; }
@@ -290,7 +292,12 @@ function endStroke(e) {
   setSculptResolution(false);
   state.controls.enabled = true;
   endGrab();
-  pushGeom(recordStrokeEnd()); // undo : enregistre le stroke terminé
+  if (state.params.tool === 'mask') {
+    if (state.targetMesh) rebuildMask(state.targetMesh.geometry); // applique le flou en fin de stroke
+    pushMask(maskRecordEnd());
+  } else {
+    pushGeom(recordStrokeEnd()); // undo : enregistre le stroke terminé
+  }
   if (e && e.pointerId !== undefined) {
     try { dom.releasePointerCapture(e.pointerId); } catch (_) {}
   }
@@ -335,11 +342,45 @@ toolButtons.forEach((btn) => {
     // L'inversion n'a de sens que pour le draw
     document.getElementById('invert-row').style.display =
       state.params.tool === 'draw' ? '' : 'none';
-    const isGizmo = state.params.tool === 'gizmo';
-    if (state.params.tool === 'split' || isGizmo) state.brushMesh.visible = false;
+    const t = state.params.tool, isGizmo = t === 'gizmo', isMask = t === 'mask';
+    if (t === 'split' || isGizmo) state.brushMesh.visible = false;
     if (isGizmo) activateGizmo(state.targetMesh); else deactivateGizmo();
     document.getElementById('gizmo-modes').style.display = isGizmo ? '' : 'none';
+    document.getElementById('mask-panel').style.display = isMask ? 'flex' : 'none';
+    if (isMask && state.targetMesh) {
+      ensureMask(state.targetMesh.geometry, state.targetMesh.material);
+      const b = state.targetMesh.geometry.userData.maskBlur || 0;
+      document.getElementById('maskblur-range').value = b;
+      document.getElementById('maskblur-val').textContent = b;
+    }
   });
+
+// Panneau masque : inverser / effacer / flou
+document.getElementById('mask-invert').addEventListener('click', () => {
+  if (!state.targetMesh) return;
+  const g = state.targetMesh.geometry; ensureMask(g, state.targetMesh.material);
+  invertMask(g);
+  pushAction(() => invertMask(g), () => invertMask(g));
+});
+document.getElementById('mask-clear').addEventListener('click', () => {
+  if (!state.targetMesh) return;
+  const g = state.targetMesh.geometry; ensureMask(g, state.targetMesh.material);
+  const old = Float32Array.from(g.userData.maskSharp);
+  clearMask(g);
+  pushAction(
+    () => { g.userData.maskSharp.set(old); rebuildMask(g); },
+    () => clearMask(g),
+  );
+});
+{
+  const range = document.getElementById('maskblur-range');
+  const val = document.getElementById('maskblur-val');
+  range.addEventListener('input', (e) => {
+    const v = parseInt(e.target.value, 10);
+    val.textContent = v;
+    if (state.targetMesh) { ensureMask(state.targetMesh.geometry, state.targetMesh.material); setMaskBlur(state.targetMesh.geometry, v); }
+  });
+}
 });
 
 // Modes du gizmo (boutons + clavier partagent applyGizmoMode)
