@@ -4,8 +4,10 @@
 //  - 'patches'  : construit les patches (inside/outside) pour une PLAGE de
 //    triangles à partir des tableaux partagés -> partiel {A,B}.
 //  - 'full'     : fallback sans SAB (un seul worker) : classe tout + patches.
-// Les parois sont construites côté main (léger). JS pur : aucune dépendance
-// (calculs matriciels manuels, tableaux bruts) -> chargement instantané.
+// Le mailleur du cap (Delaunay + CDT) tourne aussi ici via 'retopo' pour ne pas
+// geler l'UI. JS pur : aucune dépendance THREE.
+
+import { retopoMesh } from './cap-mesher.js';
 
 function pointInPolygon(x, y, poly) {
   let inside = false;
@@ -132,6 +134,15 @@ function transferables(part) {
 self.onmessage = (e) => {
   const d = e.data;
   try {
+    if (d.type === 'retopo') {
+      const loops = []; let off = 0;
+      for (const len of d.loopLens) { loops.push(Array.from(d.loopsFlat.subarray(off, off + len))); off += len; }
+      const lasso = []; for (let i = 0; i < d.lassoXY.length; i += 2) lasso.push({ x: d.lassoXY[i], y: d.lassoXY[i + 1] });
+      const r = retopoMesh({ pos: d.pos, S: d.S, D: d.D, loops, L: d.L, lasso, U: d.U, camPos: d.camPos, camFwd: d.camFwd, vw: d.vw, vh: d.vh, detail: d.detail });
+      if (r) self.postMessage({ type: 'retopoDone', position: r.position, index: r.index, failed: r.failed, repaired: r.repaired, capStats: r.capStats }, [r.position.buffer, r.index.buffer]);
+      else self.postMessage({ type: 'retopoDone', position: null });
+      return;
+    }
     if (d.type === 'classify') {
       const pos = new Float32Array(d.posSAB);
       const inside = new Uint8Array(d.insideSAB);

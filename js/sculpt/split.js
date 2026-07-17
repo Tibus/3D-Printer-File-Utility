@@ -507,174 +507,37 @@ function sweepFillWalls(loopData, hasUV, hasColor) {
   return wallPartial(new Float32Array(P), tris, hasUV, hasColor);
 }
 
-// Triangulation de Delaunay (Bowyer-Watson) de points 2D -> triangles (indices).
-function delaunay(px, py, n) {
-  // super-triangle englobant
-  let minx = Infinity, miny = Infinity, maxx = -Infinity, maxy = -Infinity;
-  for (let i = 0; i < n; i++) { if (px[i] < minx) minx = px[i]; if (px[i] > maxx) maxx = px[i]; if (py[i] < miny) miny = py[i]; if (py[i] > maxy) maxy = py[i]; }
-  const dx = maxx - minx || 1, dy = maxy - miny || 1, dmax = Math.max(dx, dy);
-  const midx = (minx + maxx) / 2, midy = (miny + maxy) / 2;
-  const SX = new Float64Array(n + 3), SY = new Float64Array(n + 3);
-  for (let i = 0; i < n; i++) { SX[i] = px[i]; SY[i] = py[i]; }
-  SX[n] = midx - 20 * dmax; SY[n] = midy - dmax;
-  SX[n + 1] = midx; SY[n + 1] = midy + 20 * dmax;
-  SX[n + 2] = midx + 20 * dmax; SY[n + 2] = midy - dmax;
-
-  const circum = (a, b, c) => {
-    const ax = SX[a], ay = SY[a], bx = SX[b], by = SY[b], cx = SX[c], cy = SY[c];
-    const d = 2 * (ax * (by - cy) + bx * (cy - ay) + cx * (ay - by));
-    if (Math.abs(d) < 1e-20) return null;
-    const a2 = ax * ax + ay * ay, b2 = bx * bx + by * by, c2 = cx * cx + cy * cy;
-    const ux = (a2 * (by - cy) + b2 * (cy - ay) + c2 * (ay - by)) / d;
-    const uy = (a2 * (cx - bx) + b2 * (ax - cx) + c2 * (bx - ax)) / d;
-    const r2 = (ax - ux) ** 2 + (ay - uy) ** 2;
-    return { ux, uy, r2 };
-  };
-  let tris = [[n, n + 1, n + 2, circum(n, n + 1, n + 2)]];
-  // ordre spatial (tri par x) pour insertion + localité
-  const order = Array.from({ length: n }, (_, i) => i).sort((i, j) => px[i] - px[j]);
-  for (const p of order) {
-    const bad = [];
-    for (let t = 0; t < tris.length; t++) {
-      const c = tris[t][3];
-      if (c && (SX[p] - c.ux) ** 2 + (SY[p] - c.uy) ** 2 < c.r2 + 1e-9) bad.push(t);
-    }
-    // arêtes frontière du polygone-trou
-    const edges = [];
-    for (const t of bad) { const [a, b, c] = tris[t]; edges.push([a, b], [b, c], [c, a]); }
-    const boundary = [];
-    for (let i = 0; i < edges.length; i++) {
-      let shared = false;
-      for (let j = 0; j < edges.length; j++) {
-        if (i !== j && edges[i][0] === edges[j][1] && edges[i][1] === edges[j][0]) { shared = true; break; }
-      }
-      if (!shared) boundary.push(edges[i]);
-    }
-    for (let k = bad.length - 1; k >= 0; k--) { const t = bad[k]; tris[t] = tris[tris.length - 1]; tris.pop(); } // swap-remove (O(bad))
-    for (const [a, b] of boundary) tris.push([a, b, p, circum(a, b, p)]);
-  }
-  const out = [];
-  for (const [a, b, c] of tris) if (a < n && b < n && c < n) out.push(a, b, c);
-  return out;
+// Lance le retopo du cap (Delaunay + CDT) dans un worker -> ne gèle pas l'UI.
+function retopoInWorker(loopData, ctx) {
+  const w = getSingle();
+  const loopsFlat = [], loopLens = [];
+  for (const loop of loopData.loops) { loopLens.push(loop.length); for (const id of loop) loopsFlat.push(id); }
+  const lassoXY = new Float32Array(ctx.lasso.length * 2);
+  for (let i = 0; i < ctx.lasso.length; i++) { lassoXY[i * 2] = ctx.lasso[i].x; lassoXY[i * 2 + 1] = ctx.lasso[i].y; }
+  w.postMessage({
+    type: 'retopo',
+    pos: loopData.pos, S: loopData.S, D: loopData.D,
+    loopsFlat: Int32Array.from(loopsFlat), loopLens: Int32Array.from(loopLens), L: loopData.L,
+    lassoXY, U: new Float32Array(ctx.U.elements),
+    camPos: { x: ctx.camPos.x, y: ctx.camPos.y, z: ctx.camPos.z }, camFwd: { x: ctx.camFwd.x, y: ctx.camFwd.y, z: ctx.camFwd.z },
+    vw: ctx.vw, vh: ctx.vh, detail: ctx.detail,
+  });
+  return once(w).then((r) => {
+    if (r.type === 'error') throw new Error(r.message);
+    return r.position ? { position: r.position, index: r.index, failed: r.failed, repaired: r.repaired, capStats: r.capStats } : null;
+  });
 }
 
-// Point (ps,pd) intérieur à la région (pair-impair sur d à s=ps) via les arêtes de boucle.
-function insideRegion(EA, EB, S, D, L, half, ps, pd) {
-  let cnt = 0;
-  for (let e = 0; e < EA.length; e++) {
-    let a = S[EA[e]], b = S[EB[e]];
-    if (b - a > half) b -= L; else if (a - b > half) b += L;
-    const lo2 = Math.min(a, b), hi2 = Math.max(a, b);
-    let ss = ps; if (ss < lo2) ss += L; else if (ss > hi2) ss -= L;
-    if (ss < lo2 || ss >= hi2) continue;
-    const t = (ss - a) / (b - a);
-    const de = D[EA[e]] + (D[EB[e]] - D[EA[e]]) * t;
-    if (de < pd) cnt++;
-  }
-  return (cnt & 1) === 1;
-}
-
-// Retopo du cap : bord = croisements exacts, intérieur = grille régulière,
-// triangulé par Delaunay et filtré pair-impair. Uniforme ET étanche.
-function retopoCap(loopData, ctx, hasUV, hasColor) {
-  const { pos, S, D, loops, L } = loopData;
-  const half = L * 0.5;
-  const nb = pos.length / 3; // croisements (bord)
-  if (nb < 3) return null;
-  const EA = [], EB = [];
-  for (const loop of loops) for (let i = 0; i < loop.length; i++) { EA.push(loop[i]); EB.push(loop[(i + 1) % loop.length]); }
-
-  // longueur d'arête médiane du bord (en 3D) -> pas de grille
-  // (s,d) des croisements + taille 3D du cap
-  let dMin = Infinity, dMax = -Infinity;
-  for (let i = 0; i < nb; i++) { if (D[i] < dMin) dMin = D[i]; if (D[i] > dMax) dMax = D[i]; }
-  let bx0 = Infinity, by0 = Infinity, bz0 = Infinity, bx1 = -Infinity, by1 = -Infinity, bz1 = -Infinity;
-  for (let i = 0; i < nb; i++) { const x = pos[i * 3], y = pos[i * 3 + 1], z = pos[i * 3 + 2]; if (x < bx0) bx0 = x; if (x > bx1) bx1 = x; if (y < by0) by0 = y; if (y > by1) by1 = y; if (z < bz0) bz0 = z; if (z > bz1) bz1 = z; }
-  const worldDiag = Math.hypot(bx1 - bx0, by1 - by0, bz1 - bz0) || 1;
-  // finesse basée sur la TAILLE du cap (indépendante de la résolution du maillage),
-  // pilotée par le slider "Détail coupe" (detail*10 cellules sur la diagonale).
-  const cells = Math.max(8, (ctx.detail || 6) * 10);
-  const h3d = worldDiag / cells;
-  if (!(h3d > 0)) return null;
-  const sScale = worldDiag / L;                 // ~ unités monde par unité s
-  const stepS = h3d / Math.max(sScale, 1e-6);   // pas de grille en s
-  const stepD = h3d;
-
-  // points de base : bord (croisements) + intérieur (grille dans la région, loin du bord)
-  const baseS = [], baseD = [], P3 = [];         // baseS,baseD = (s, d) non triplés ; P3 = 3D
-  for (let i = 0; i < nb; i++) { baseS.push(S[i]); baseD.push(D[i]); P3.push(pos[i * 3], pos[i * 3 + 1], pos[i * 3 + 2]); }
-
-  // mapping (s,d) -> 3D via le prisme (unproject du point lasso à l'abscisse s, à la profondeur d)
-  const { lasso, U, camPos, camFwd, vw, vh } = ctx;
-  const cum = new Float32Array(lasso.length + 1);
-  for (let i = 0; i < lasso.length; i++) { const a = lasso[i], b = lasso[(i + 1) % lasso.length]; cum[i + 1] = cum[i] + Math.hypot(b.x - a.x, b.y - a.y); }
-  const pixAt = (s) => {
-    let ss = ((s % L) + L) % L;
-    let i = 0; while (i < lasso.length && cum[i + 1] < ss) i++;
-    const a = lasso[i % lasso.length], b = lasso[(i + 1) % lasso.length];
-    const seg = cum[i + 1] - cum[i] || 1, t = (ss - cum[i]) / seg;
-    return [a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t];
-  };
-  const near = new THREE.Vector3(), far = new THREE.Vector3(), dir = new THREE.Vector3();
-  const sdTo3D = (s, d) => {
-    const [pxp, pyp] = pixAt(s);
-    const ndcx = (pxp / vw) * 2 - 1, ndcy = -(pyp / vh) * 2 + 1;
-    near.set(ndcx, ndcy, -1).applyMatrix4(U); far.set(ndcx, ndcy, 1).applyMatrix4(U);
-    dir.copy(far).sub(near).normalize();
-    const denom = dir.dot(camFwd) || 1e-6;
-    const k = (d - (near.x - camPos.x) * camFwd.x - (near.y - camPos.y) * camFwd.y - (near.z - camPos.z) * camFwd.z) / denom;
-    return [near.x + dir.x * k, near.y + dir.y * k, near.z + dir.z * k];
-  };
-
-  const margin = h3d * 0.6;
-  for (let s = stepS * 0.5; s < L; s += stepS) {
-    for (let d = dMin + stepD * 0.5; d < dMax; d += stepD) {
-      // dans la région et à l'écart du bord (voisinage inside sur ±margin)
-      if (!insideRegion(EA, EB, S, D, L, half, s, d)) continue;
-      if (!insideRegion(EA, EB, S, D, L, half, s, d + margin) || !insideRegion(EA, EB, S, D, L, half, s, d - margin)) continue;
-      const p = sdTo3D(s, d);
-      baseS.push(s); baseD.push(d); P3.push(p[0], p[1], p[2]);
-    }
-  }
-
-  // périodicité : fantômes uniquement près de la couture (s≈0 ou s≈L) -> peu de
-  // points ajoutés (Delaunay reste rapide), stitch le tour.
-  const nBase = baseS.length;
-  const seamMargin = stepS * 3;
-  const DXa = [], DYa = [], origa = [];
-  for (let i = 0; i < nBase; i++) { DXa.push(baseS[i] * sScale); DYa.push(baseD[i]); origa.push(i); }
-  for (let i = 0; i < nBase; i++) {
-    if (baseS[i] < seamMargin) { DXa.push((baseS[i] + L) * sScale); DYa.push(baseD[i]); origa.push(i); }
-    else if (baseS[i] > L - seamMargin) { DXa.push((baseS[i] - L) * sScale); DYa.push(baseD[i]); origa.push(i); }
-  }
-  const DX = new Float64Array(DXa), DY = new Float64Array(DYa), orig = Int32Array.from(origa);
-
-  const _T = (typeof performance !== 'undefined') ? () => performance.now() : () => 0; let _t = _T();
-  const tri = delaunay(DX, DY, DX.length);
-  const _dt = _T() - _t; _t = _T();
-  const spanMax = L * sScale * 0.5;
-  const seen = new Set(), out = [];
-  for (let i = 0; i < tri.length; i += 3) {
-    const ta = tri[i], tb = tri[i + 1], tc = tri[i + 2];
-    const a = orig[ta], b = orig[tb], c = orig[tc];
-    if (a === b || b === c || a === c) continue;                 // copies confondues
-    const xa = DX[ta], xb = DX[tb], xc = DX[tc];
-    if (Math.max(xa, xb, xc) - Math.min(xa, xb, xc) > spanMax) continue; // inter-période
-    const kk = [a, b, c].sort((x, y) => x - y).join(','); if (seen.has(kk)) continue; seen.add(kk); // dédup
-    const cs = (((xa + xb + xc) / 3 / sScale) % L + L) % L, cd = (DY[ta] + DY[tb] + DY[tc]) / 3;
-    if (!insideRegion(EA, EB, S, D, L, half, cs, cd)) continue;
-    out.push(a, b, c);
-  }
-  globalThis.__capTimes = { pts: DX.length, ne: EA.length, delaunay: Math.round(_dt), filter: Math.round(_T() - _t) };
-  if (out.length === 0) return null;
-  return wallPartial(new Float32Array(P3), out, hasUV, hasColor);
-}
-
-// Retopo Delaunay (uniforme + étanche) ; fallback zip puis balayage.
-function triangulateWalls(loopData, ctx, hasUV, hasColor) {
-  let r = null;
-  try { r = retopoCap(loopData, ctx, hasUV, hasColor); } catch (e) { r = null; }
-  return r || wrapZipWalls(loopData, hasUV, hasColor) || sweepFillWalls(loopData, hasUV, hasColor);
+// Partiel cap (avec normales) depuis la sortie brute du worker.
+function capPartialFromRaw(raw, hasUV, hasColor) {
+  if (!raw || !raw.index.length) return null;
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(raw.position, 3));
+  g.setIndex(new THREE.BufferAttribute(raw.index, 1));
+  g.computeVertexNormals();
+  const uv = hasUV ? new Float32Array((raw.position.length / 3) * 2) : null;
+  const col = hasColor ? new Float32Array(raw.position.length).fill(0.8) : null;
+  return { position: raw.position, normal: g.attributes.normal.array, uv, color: col, index: raw.index };
 }
 
 export async function lassoSplitAsync(geometry, lassoPx, camera, matrixWorld, vw, vh, detail, onProgress) {
@@ -716,24 +579,26 @@ export async function lassoSplitAsync(geometry, lassoPx, camera, matrixWorld, vw
   }
   st.classifyPatches = T() - t0; t0 = T();
 
-  // Parois étanches reconstruites depuis les boucles de coupe exactes.
+  // Reconstruction des parois. Le retopo lourd (Delaunay + CDT du cap) tourne
+  // dans un WORKER -> l'UI ne gèle pas pendant le calcul.
   let wallFinal = null;
   try {
     const loopData = buildCutLoops(partials, Marr, lasso, vw, vh, camPos, camFwd);
-    st.loops = T() - t0; t0 = T();
     globalThis.__wallDebug = loopData.stats;
+    if (onProgress) onProgress(0.93);
     const ctx = { lasso: lassoSmooth, U, camPos, camFwd, vw, vh, detail };
-    wallFinal = triangulateWalls(loopData, ctx, hasUV, hasColor);
-    globalThis.__wallDebug.mode = wallFinal ? 'exact' : 'fallback';
+    const raw = await retopoInWorker(loopData, ctx);
+    wallFinal = capPartialFromRaw(raw, hasUV, hasColor);
+    if (!wallFinal) wallFinal = wrapZipWalls(loopData, hasUV, hasColor) || sweepFillWalls(loopData, hasUV, hasColor);
+    globalThis.__wallDebug.mode = raw ? 'worker-cdt' : (wallFinal ? 'fallback' : 'none');
+    if (raw) { globalThis.__wallDebug.capFailed = raw.failed; globalThis.__wallDebug.repaired = raw.repaired; globalThis.__wallDebug.capStats = raw.capStats; }
   } catch (err) { globalThis.__wallDebug = { error: String(err && err.message || err) }; }
   st.walls = T() - t0; t0 = T();
 
-  // Fallback raycast uniquement si la reconstruction exacte a échoué (paresseux :
-  // évite des centaines de raycasts quand le retopo réussit — le cas courant).
+  // Dernier recours : parois raycast si tout le reste a échoué.
   if (!wallFinal) {
     const cols = raycastColumns(geometry, lassoSmooth, U, vw, vh, camPos, camFwd);
     if (cols) wallFinal = buildWallPartial(cols, Math.max(1, detail | 0), hasUV, hasColor);
-    st.raycastFallback = T() - t0; t0 = T();
   }
   if (!wallFinal) return null;
 
