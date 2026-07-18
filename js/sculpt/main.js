@@ -22,6 +22,7 @@ import { booleanObjects } from './boolean.js';
 import { repairMesh } from './repair.js';
 import { hollowMesh } from './hollow.js';
 import { checkThickness } from './wallcheck.js';
+import { autoOrient } from './orient.js';
 import { pushGeom, pushAction, pushMask, undo, redo, setHistoryListener } from './history.js';
 import { initGizmo, activateGizmo, deactivateGizmo, setAltPivot, isGizmoActive } from './gizmo.js';
 import { ensureMask, invertMask, clearMask, setMaskBlur, rebuildMask, bakeMaskBlur, maskRecordBegin, maskRecordEnd } from './mask.js';
@@ -460,6 +461,30 @@ async function runBoolean(op) {
   mm.addEventListener('input', (e) => { state.params.realSizeMM = Math.max(0, parseFloat(e.target.value) || 0); refresh(); });
   refresh();
 }
+document.getElementById('orient-btn').addEventListener('click', async () => {
+  const mesh = state.targetMesh;
+  if (!mesh) { setStatus('Aucun objet à orienter.'); return; }
+  if (mesh.userData._wallView) { setStatus('Quitte d’abord la vue épaisseur.'); return; }
+  if (isGizmoActive()) deactivateGizmo();
+  showLoading(true, 'Auto-orientation…');
+  const startedAt = performance.now();
+  await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+  try {
+    const geom = await Promise.resolve().then(() => autoOrient(mesh.geometry));
+    if (!geom) { setStatus('Auto-orientation impossible.'); return; }
+    const newMesh = createObject(geom, mesh.material.clone(), mesh.name);
+    newMesh.position.copy(mesh.position); newMesh.updateMatrixWorld(true);
+    const old = mesh;
+    detachObject(old); setActiveObject(newMesh); renderObjectList();
+    setStatus('Orienté pour l’impression (base au sol, surplombs minimisés).');
+    pushAction(
+      () => { detachObject(newMesh); attachObject(old); setActiveObject(old); renderObjectList(); },
+      () => { detachObject(old); attachObject(newMesh); setActiveObject(newMesh); renderObjectList(); },
+      () => { for (const m of [old, newMesh]) if (!state.objects.includes(m)) disposeObject(m); },
+    );
+  } catch (err) { console.error(err); setStatus(`Auto-orientation : ${err.message}`); }
+  finally { const wait = Math.max(0, 250 - (performance.now() - startedAt)); setTimeout(() => showLoading(false), wait); }
+});
 document.getElementById('wallcheck-btn').addEventListener('click', async () => {
   const mesh = state.targetMesh;
   if (!mesh) { setStatus('Aucun objet.'); return; }
