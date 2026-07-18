@@ -52,6 +52,8 @@ export const state = {
     cutDetail: 10,            // finesse du retopo du cap (×10 cellules sur la diagonale)
     splitMode: 'csg',         // 'csg' (booléen three-bvh-csg, robuste, défaut) | 'fast' (CDT, worker, rapide)
     remeshRes: 80,            // résolution du voxel remesh (cellules sur la plus grande dimension)
+    hollowThickness: 0.04,    // épaisseur de coque (fraction de la plus grande dimension)
+    realSizeMM: 0,            // taille réelle (mm) de la plus grande dimension (0 = non défini)
   },
 
   // Alpha du brush : { grid: Float32Array(n*n), n, name } — forme du coup.

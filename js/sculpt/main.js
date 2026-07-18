@@ -20,6 +20,7 @@ import { lassoSplitLocalized } from './split-local.js';
 import { voxelRemesh } from './remesh.js';
 import { booleanObjects } from './boolean.js';
 import { repairMesh } from './repair.js';
+import { hollowMesh } from './hollow.js';
 import { pushGeom, pushAction, pushMask, undo, redo, setHistoryListener } from './history.js';
 import { initGizmo, activateGizmo, deactivateGizmo, setAltPivot, isGizmoActive } from './gizmo.js';
 import { ensureMask, invertMask, clearMask, setMaskBlur, rebuildMask, bakeMaskBlur, maskRecordBegin, maskRecordEnd } from './mask.js';
@@ -445,6 +446,45 @@ async function runBoolean(op) {
   } catch (err) { console.error(err); setStatus(`Booléen : ${err.message}`); }
   finally { const wait = Math.max(0, 250 - (performance.now() - startedAt)); setTimeout(() => showLoading(false), wait); }
 }
+{
+  // épaisseur de paroi (%) + lecture en mm si taille réelle définie
+  const range = document.getElementById('hollow-range'), val = document.getElementById('hollow-val'), mm = document.getElementById('realsize-mm');
+  const refresh = () => {
+    const pct = Math.round(state.params.hollowThickness * 100);
+    const real = state.params.realSizeMM;
+    val.textContent = real > 0 ? `${pct} % (≈ ${(state.params.hollowThickness * real).toFixed(1)} mm)` : `${pct} %`;
+  };
+  range.value = Math.round(state.params.hollowThickness * 100);
+  range.addEventListener('input', (e) => { state.params.hollowThickness = parseInt(e.target.value, 10) / 100; refresh(); });
+  mm.addEventListener('input', (e) => { state.params.realSizeMM = Math.max(0, parseFloat(e.target.value) || 0); refresh(); });
+  refresh();
+}
+document.getElementById('hollow-btn').addEventListener('click', async () => {
+  const mesh = state.targetMesh;
+  if (!mesh) { setStatus('Aucun objet à évider.'); return; }
+  if (isGizmoActive()) deactivateGizmo();
+  showLoading(true, 'Évidement…');
+  const startedAt = performance.now();
+  const frac = state.params.hollowThickness;
+  const res = Math.max(64, Math.min(140, Math.ceil(2.2 / frac))); // assez fin pour résoudre la paroi (borné pour la perf)
+  await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+  try {
+    const out = await hollowMesh(mesh.geometry, frac, res);
+    if (out && out.tooThick) { setStatus('Épaisseur trop grande : pas d’intérieur. Réduis l’épaisseur.'); return; }
+    if (!out || !out.geometry || out.geometry.index.count === 0) { setStatus('Évidement échoué.'); return; }
+    const newMesh = createObject(out.geometry, mesh.material.clone(), mesh.name);
+    newMesh.position.copy(mesh.position); newMesh.updateMatrixWorld(true);
+    const old = mesh;
+    detachObject(old); setActiveObject(newMesh); renderObjectList();
+    setStatus(`Évidé — coque, ${(out.geometry.index.count / 3).toLocaleString()} triangles`);
+    pushAction(
+      () => { detachObject(newMesh); attachObject(old); setActiveObject(old); renderObjectList(); },
+      () => { detachObject(old); attachObject(newMesh); setActiveObject(newMesh); renderObjectList(); },
+      () => { for (const m of [old, newMesh]) if (!state.objects.includes(m)) disposeObject(m); },
+    );
+  } catch (err) { console.error(err); setStatus(`Évidement : ${err.message}`); }
+  finally { const wait = Math.max(0, 300 - (performance.now() - startedAt)); setTimeout(() => showLoading(false), wait); }
+});
 document.getElementById('repair-btn').addEventListener('click', () => {
   const mesh = state.targetMesh;
   if (!mesh) { setStatus('Aucun objet à réparer.'); return; }

@@ -148,6 +148,22 @@
   <button id="separate-btn" class="control-btn">🧩 Séparer les parties indépendantes</button>
   <button id="remesh-btn" class="control-btn" title="Reconstruit une topologie propre et watertight (répare les meshes IA). Conserve la texture.">🧊 Voxel remesh (nettoyer)</button>
   <button id="repair-btn" class="control-btn" title="Souder les sommets, supprimer les bouts flottants, boucher les trous (garde la topologie)">🩹 Réparer le maillage</button>
+  <button id="hollow-btn" class="control-btn" title="Évide l'objet en une coque d'épaisseur donnée (économise le filament)">🥚 Évider (coque)</button>
+
+  <div class="param">
+    <label>
+      <span class="param-label">Épaisseur paroi</span>
+      <input type="range" id="hollow-range" min="1" max="20" value="4" step="1">
+      <span class="param-val" id="hollow-val">4 %</span>
+    </label>
+  </div>
+
+  <div class="param">
+    <label>
+      <span class="param-label">Taille réelle (mm)</span>
+      <input type="number" id="realsize-mm" min="0" step="1" value="" placeholder="—" style="width:64px;">
+    </label>
+  </div>
 
   <div class="param">
     <label>

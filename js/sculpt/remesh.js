@@ -51,11 +51,9 @@ function reprojectAttrs(newGeom, srcGeom) {
   if (ncol) newGeom.setAttribute('color', new THREE.BufferAttribute(ncol, 3));
 }
 
-// Remaille geometry par voxels. `resolution` = nb approx de cellules sur la plus grande
-// dimension. Retourne une NOUVELLE géométrie (indexée, watertight) ou null.
-export async function voxelRemesh(geometry, resolution = 64) {
-  const wasm = await getManifold();
-  const { Manifold } = wasm;
+// Construit la fonction SDF (distance signée : positif dedans, négatif dehors, via BVH)
+// + les bornes et l'edgeLength pour Manifold.levelSet. Partagé remesh / évidement.
+export function buildSDF(geometry, resolution) {
   if (!geometry.index) return null;
   if (!geometry.boundsTree) geometry.computeBoundsTree({ setBoundingBox: true });
   geometry.computeBoundingBox();
@@ -65,10 +63,8 @@ export async function voxelRemesh(geometry, resolution = 64) {
   const pad = maxDim * 0.06;
   const bounds = { min: [bb.min.x - pad, bb.min.y - pad, bb.min.z - pad], max: [bb.max.x + pad, bb.max.y + pad, bb.max.z + pad] };
   const edgeLength = maxDim / Math.max(8, resolution | 0);
-
   const pos = geometry.attributes.position.array, index = geometry.index.array;
   const target = {};
-  // SDF : positif à l'intérieur, négatif dehors (convention Manifold.levelSet).
   const sdf = (point) => {
     _p.set(point[0], point[1], point[2]);
     const hit = geometry.boundsTree.closestPointToPoint(_p, target);
@@ -79,6 +75,29 @@ export async function voxelRemesh(geometry, resolution = 64) {
     const dot = (_p.x - hit.point.x) * _n.x + (_p.y - hit.point.y) * _n.y + (_p.z - hit.point.z) * _n.z;
     return dot >= 0 ? -hit.distance : hit.distance; // dehors -> négatif, dedans -> positif
   };
+  return { sdf, bounds, edgeLength, maxDim };
+}
+
+// Construit une géométrie THREE (position + normales) à partir d'un Manifold Mesh.
+export function geomFromManifoldMesh(mm) {
+  const numProp = mm.numProp, vp = mm.vertProperties, V = vp.length / numProp;
+  const outPos = new Float32Array(V * 3);
+  for (let i = 0; i < V; i++) { const o = i * numProp; outPos[i * 3] = vp[o]; outPos[i * 3 + 1] = vp[o + 1]; outPos[i * 3 + 2] = vp[o + 2]; }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(outPos, 3));
+  g.setIndex(new THREE.BufferAttribute(mm.triVerts instanceof Uint32Array ? mm.triVerts.slice() : new Uint32Array(mm.triVerts), 1));
+  g.computeVertexNormals();
+  return g;
+}
+
+// Remaille geometry par voxels. `resolution` = nb approx de cellules sur la plus grande
+// dimension. Retourne une NOUVELLE géométrie (indexée, watertight) ou null.
+export async function voxelRemesh(geometry, resolution = 64) {
+  const wasm = await getManifold();
+  const { Manifold } = wasm;
+  const built = buildSDF(geometry, resolution);
+  if (!built) return null;
+  const { sdf, bounds, edgeLength } = built;
 
   let man = null, mm;
   try {
