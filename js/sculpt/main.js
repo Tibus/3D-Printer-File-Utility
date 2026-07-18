@@ -4,7 +4,7 @@ import * as THREE from 'three';
 import { state } from './state.js';
 import { initScene } from './scene.js';
 import {
-  loadModelFromFile, subdivideTarget,
+  loadModelFromFile, subdivideTarget, separateComponents,
   createObject, setActiveObject, setOnObjectsChanged,
   detachObject, attachObject, disposeObject,
 } from './loader.js';
@@ -15,7 +15,7 @@ import {
 } from './brush.js';
 import { lassoSplitAsync } from './split.js';
 import { pushGeom, pushAction, pushMask, undo, redo, setHistoryListener } from './history.js';
-import { initGizmo, activateGizmo, deactivateGizmo, setGizmoMode, setAltPivot, isGizmoActive } from './gizmo.js';
+import { initGizmo, activateGizmo, deactivateGizmo, setAltPivot, isGizmoActive } from './gizmo.js';
 import { ensureMask, invertMask, clearMask, setMaskBlur, rebuildMask, maskRecordBegin, maskRecordEnd } from './mask.js';
 import { exportGLB, exportOBJ } from './exporter.js';
 import { refreshWireframe, setStatus, showLoading, setProgress } from './ui.js';
@@ -324,6 +324,11 @@ document.getElementById('model-input').addEventListener('change', (e) => {
 document.getElementById('export-glb-btn').addEventListener('click', exportGLB);
 document.getElementById('export-obj-btn').addEventListener('click', exportOBJ);
 document.getElementById('subdivide-btn').addEventListener('click', subdivideTarget);
+document.getElementById('separate-btn').addEventListener('click', () => {
+  if (isGizmoActive()) deactivateGizmo();
+  separateComponents();
+  renderObjectList();
+});
 
 // Undo / redo
 const undoBtn = document.getElementById('undo-btn');
@@ -345,7 +350,7 @@ toolButtons.forEach((btn) => {
     const t = state.params.tool, isGizmo = t === 'gizmo', isMask = t === 'mask';
     if (t === 'split' || isGizmo) state.brushMesh.visible = false;
     if (isGizmo) activateGizmo(state.targetMesh); else deactivateGizmo();
-    document.getElementById('gizmo-modes').style.display = isGizmo ? '' : 'none';
+    document.getElementById('gizmo-hint').style.display = isGizmo ? '' : 'none';
     document.getElementById('mask-panel').style.display = isMask ? 'flex' : 'none';
     if (isMask && state.targetMesh) {
       ensureMask(state.targetMesh.geometry, state.targetMesh.material);
@@ -382,13 +387,6 @@ document.getElementById('mask-clear').addEventListener('click', () => {
   });
 }
 });
-
-// Modes du gizmo (boutons + clavier partagent applyGizmoMode)
-function applyGizmoMode(mode) {
-  setGizmoMode(mode);
-  document.querySelectorAll('.gizmo-mode').forEach((b) => b.classList.toggle('active', b.dataset.mode === mode));
-}
-document.querySelectorAll('.gizmo-mode').forEach((b) => b.addEventListener('click', () => applyGizmoMode(b.dataset.mode)));
 
 // ---------- UI : sliders ----------
 
@@ -536,12 +534,7 @@ document.addEventListener('keydown', (e) => {
   const mod = e.metaKey || e.ctrlKey;
   if (mod && (e.key === 'z' || e.key === 'Z')) { e.preventDefault(); if (e.shiftKey) redo(); else undo(); return; }
   if (mod && (e.key === 'y' || e.key === 'Y')) { e.preventDefault(); redo(); return; }
-  if (isGizmoActive()) {
-    if (e.key === 'Alt') { e.preventDefault(); setAltPivot(true); return; }
-    if (e.key === 'w' || e.key === 'W') { applyGizmoMode('translate'); return; }
-    if (e.key === 'e' || e.key === 'E') { applyGizmoMode('rotate'); return; }
-    if (e.key === 'r' || e.key === 'R') { applyGizmoMode('scale'); return; }
-  }
+  if (isGizmoActive() && e.key === 'Alt') { e.preventDefault(); setAltPivot(true); return; }
   if ((e.key === 'x' || e.key === 'X') && !e.repeat) { enterRadiusMode(); return; }
   if (e.key === 'p' || e.key === 'P') { perf.visible = !perf.visible; hud.style.display = perf.visible ? 'block' : 'none'; }
 });

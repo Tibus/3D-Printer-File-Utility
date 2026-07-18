@@ -71,10 +71,9 @@
     </div>
   </div>
 
-  <div id="gizmo-modes" class="undo-row" style="display:none; grid-template-columns:1fr 1fr 1fr;">
-    <button class="gizmo-mode active" data-mode="translate" title="Déplacer (W)">↔ Dépl.</button>
-    <button class="gizmo-mode" data-mode="rotate" title="Tourner (E)">⟳ Rot.</button>
-    <button class="gizmo-mode" data-mode="scale" title="Échelle (R)">⤢ Éch.</button>
+  <div id="gizmo-hint" style="display:none; font-size:11.5px; line-height:1.5; color:#9a9ac0;">
+    Flèches = déplacer · anneaux = tourner · cubes = échelle.<br>
+    <strong>Alt</strong> maintenu : déplacer le pivot seul.
   </div>
 
   <div class="undo-row">
@@ -144,6 +143,7 @@
   </div>
 
   <button id="subdivide-btn" class="control-btn">🔺 Subdiviser (ajouter du détail)</button>
+  <button id="separate-btn" class="control-btn">🧩 Séparer les parties indépendantes</button>
 
   <div class="param">
     <label>

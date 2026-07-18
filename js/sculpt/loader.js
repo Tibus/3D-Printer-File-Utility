@@ -357,6 +357,77 @@ export function attachObject(mesh) {
   _onObjectsChanged();
 }
 
+// Sépare l'objet actif en plusieurs objets selon ses composantes connexes
+// (parties non reliées en 3D). Soudure par position pour ignorer les doublons
+// de sommets aux coutures. Annulable.
+export function separateComponents() {
+  const src = state.targetMesh;
+  if (!src) return;
+  const geo = src.geometry;
+  const idx = geo.index.array;
+  const posAttr = geo.attributes.position;
+  const vCount = posAttr.count;
+  const pos = posAttr.array;
+
+  // 1) groupes de position (soudure) — coïncidents = même groupe
+  const map = new Map(); const posGroup = new Int32Array(vCount); let ng = 0; const K = 1e4;
+  for (let i = 0; i < vCount; i++) {
+    const key = Math.round(pos[i * 3] * K) + '_' + Math.round(pos[i * 3 + 1] * K) + '_' + Math.round(pos[i * 3 + 2] * K);
+    let g = map.get(key); if (g === undefined) { g = ng++; map.set(key, g); }
+    posGroup[i] = g;
+  }
+  // 2) union-find des groupes via les triangles
+  const parent = new Int32Array(ng); for (let i = 0; i < ng; i++) parent[i] = i;
+  const find = (x) => { while (parent[x] !== x) { parent[x] = parent[parent[x]]; x = parent[x]; } return x; };
+  const union = (a, b) => { a = find(a); b = find(b); if (a !== b) parent[a] = b; };
+  for (let t = 0; t < idx.length; t += 3) { const a = posGroup[idx[t]], b = posGroup[idx[t + 1]], c = posGroup[idx[t + 2]]; union(a, b); union(b, c); }
+  // 3) indice de composante par triangle
+  const compOf = new Map(); const triComp = new Int32Array(idx.length / 3); let nc = 0;
+  for (let t = 0; t < idx.length; t += 3) { const r = find(posGroup[idx[t]]); let ci = compOf.get(r); if (ci === undefined) { ci = nc++; compOf.set(r, ci); } triComp[t / 3] = ci; }
+  if (nc <= 1) { setStatus('Aucune partie indépendante à séparer.'); return; }
+
+  // 4) construit une géométrie par composante
+  const hasNor = !!geo.attributes.normal, hasUV = !!geo.attributes.uv, hasCol = !!geo.attributes.color;
+  const N = hasNor ? geo.attributes.normal.array : null, U = hasUV ? geo.attributes.uv.array : null, C = hasCol ? geo.attributes.color.array : null;
+  const builders = [];
+  for (let i = 0; i < nc; i++) builders.push({ pos: [], nor: hasNor ? [] : null, uv: hasUV ? [] : null, col: hasCol ? [] : null, idx: [], cnt: 0 });
+  const remap = new Int32Array(vCount), stamp = new Int32Array(vCount).fill(-1); // partagé (mémoire bornée)
+  const vmap = (ci, b, v) => {
+    if (stamp[v] === ci) return remap[v];
+    stamp[v] = ci; const ni = b.cnt++; remap[v] = ni;
+    b.pos.push(pos[v * 3], pos[v * 3 + 1], pos[v * 3 + 2]);
+    if (b.nor) b.nor.push(N[v * 3], N[v * 3 + 1], N[v * 3 + 2]);
+    if (b.uv) b.uv.push(U[v * 2], U[v * 2 + 1]);
+    if (b.col) b.col.push(C[v * 3], C[v * 3 + 1], C[v * 3 + 2]);
+    return ni;
+  };
+  for (let t = 0; t < idx.length; t += 3) { const ci = triComp[t / 3], b = builders[ci]; b.idx.push(vmap(ci, b, idx[t]), vmap(ci, b, idx[t + 1]), vmap(ci, b, idx[t + 2])); }
+
+  const mat = src.material;
+  const created = builders.map((b, i) => {
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(b.pos, 3));
+    if (b.nor) g.setAttribute('normal', new THREE.Float32BufferAttribute(b.nor, 3));
+    if (b.uv) g.setAttribute('uv', new THREE.Float32BufferAttribute(b.uv, 2));
+    if (b.col) g.setAttribute('color', new THREE.Float32BufferAttribute(b.col, 3));
+    g.setIndex(b.idx);
+    if (!b.nor) g.computeVertexNormals();
+    g.attributes.position.setUsage(THREE.DynamicDrawUsage);
+    g.attributes.normal.setUsage(THREE.DynamicDrawUsage);
+    return createObject(g, mat.clone(), `${src.name} · ${i + 1}`);
+  });
+
+  detachObject(src);
+  setActiveObject(created[0]);
+  _onObjectsChanged();
+  setStatus(`Séparé en ${nc} objets.`);
+  pushAction(
+    () => { for (const m of created) detachObject(m); attachObject(src); setActiveObject(src); },
+    () => { detachObject(src); for (const m of created) attachObject(m); setActiveObject(created[0]); },
+    () => { for (const m of [src, ...created]) if (!state.objects.includes(m)) disposeObject(m); },
+  );
+}
+
 export function removeObject(mesh) {
   const i = state.objects.indexOf(mesh);
   if (i < 0) return;
