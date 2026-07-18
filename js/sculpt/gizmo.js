@@ -16,6 +16,10 @@ let active = false;
 let altMode = false;
 let before = null;
 
+// Déformation live pondérée par le masque (les vertex masqués ne bougent jamais,
+// dès le début du drag — pas de baking en fin de geste).
+let live = null; // { mask, origPos, origNor, meshWorld, meshWorldInv, pivotStartInv }
+
 function worldTRS(obj) {
   obj.updateMatrixWorld(true);
   const p = new THREE.Vector3(), q = new THREE.Quaternion(), s = new THREE.Vector3();
@@ -48,11 +52,72 @@ function refreshEnabled() {
   }
 }
 
+// Démarre la déformation live : détache le mesh du pivot (il reste fixe dans la
+// scène), mémorise positions/normales d'origine + les matrices de départ.
+function startLiveDeform() {
+  const mesh = currentMesh, geom = mesh.geometry;
+  state.scene.attach(mesh); mesh.updateMatrixWorld(true);
+  pivot.updateMatrixWorld(true);
+  live = {
+    mask: getMask(geom),
+    origPos: Float32Array.from(geom.attributes.position.array),
+    origNor: Float32Array.from(geom.attributes.normal.array),
+    meshWorld: mesh.matrixWorld.clone(),
+    meshWorldInv: mesh.matrixWorld.clone().invert(),
+    pivotStartInv: pivot.matrixWorld.clone().invert(),
+  };
+}
+
+const _delta = new THREE.Matrix4(), _local = new THREE.Matrix4();
+// À chaque frame de drag : recompose les positions depuis l'origine, pondérées
+// par (1 - masque). localDelta = meshWorldInv · (pivotNow · pivotStartInv) · meshWorld.
+function applyLiveDeform() {
+  if (!live || !currentMesh) return;
+  const geom = currentMesh.geometry, pos = geom.attributes.position.array;
+  const { mask, origPos, meshWorld, meshWorldInv, pivotStartInv } = live;
+  pivot.updateMatrixWorld(true);
+  _delta.multiplyMatrices(pivot.matrixWorld, pivotStartInv);
+  _local.multiplyMatrices(_delta, meshWorld).premultiply(meshWorldInv);
+  const e = _local.elements;
+  for (let i = 0; i < mask.length; i++) {
+    const v3 = i * 3, ox = origPos[v3], oy = origPos[v3 + 1], oz = origPos[v3 + 2];
+    const w = 1 - mask[i];
+    if (w <= 0) { pos[v3] = ox; pos[v3 + 1] = oy; pos[v3 + 2] = oz; continue; }
+    const tx = e[0] * ox + e[4] * oy + e[8] * oz + e[12];
+    const ty = e[1] * ox + e[5] * oy + e[9] * oz + e[13];
+    const tz = e[2] * ox + e[6] * oy + e[10] * oz + e[14];
+    pos[v3] = ox + (tx - ox) * w; pos[v3 + 1] = oy + (ty - oy) * w; pos[v3 + 2] = oz + (tz - oz) * w;
+  }
+  geom.attributes.position.needsUpdate = true; // normales/BVH recalculées au relâchement (perf)
+}
+
+// Relâchement : normales + BVH + entrée d'annulation (vertex non totalement masqués).
+function endLiveDeform() {
+  const mesh = currentMesh, geom = mesh.geometry;
+  const pos = geom.attributes.position.array, nor = geom.attributes.normal.array;
+  const { mask, origPos, origNor } = live;
+  geom.computeVertexNormals();
+  if (geom.boundsTree) geom.boundsTree.refit();
+  const idx = [];
+  for (let i = 0; i < mask.length; i++) if (mask[i] < 0.999) idx.push(i);
+  const indices = new Uint32Array(idx), old = new Float32Array(idx.length * 6), neu = new Float32Array(idx.length * 6);
+  for (let k = 0; k < indices.length; k++) {
+    const v3 = indices[k] * 3, o = k * 6;
+    old[o] = origPos[v3]; old[o + 1] = origPos[v3 + 1]; old[o + 2] = origPos[v3 + 2];
+    old[o + 3] = origNor[v3]; old[o + 4] = origNor[v3 + 1]; old[o + 5] = origNor[v3 + 2];
+    neu[o] = pos[v3]; neu[o + 1] = pos[v3 + 1]; neu[o + 2] = pos[v3 + 2];
+    neu[o + 3] = nor[v3]; neu[o + 4] = nor[v3 + 1]; neu[o + 5] = nor[v3 + 2];
+  }
+  live = null;
+  pushGeom({ mesh, indices, old, new: neu });
+  activateGizmo(mesh); // pivot frais recentré, mesh ré-attaché
+}
+
 function onMouseUp() {
+  if (live) { endLiveDeform(); return; }
   if (altMode || !currentMesh || !before) { normalizePivot(); return; }
   const after = worldTRS(currentMesh);
   if (after.p.equals(before.p) && after.q.equals(before.q) && after.s.equals(before.s)) { normalizePivot(); return; }
-  if (hasMask(currentMesh.geometry)) { bakeMaskedTransform(currentMesh, before, after); return; }
   const mesh = currentMesh, b = before, a = after;
   normalizePivot();
   pushAction(() => applyWorldTRS(mesh, b), () => applyWorldTRS(mesh, a));
@@ -64,7 +129,11 @@ function wireTC(tc) {
     if (e.value) { for (const o of tcs) if (o !== tc) { o.enabled = false; o.visible = false; } } // isole le drag courant
     else { refreshEnabled(); }
   });
-  tc.addEventListener('mouseDown', () => { before = currentMesh ? worldTRS(currentMesh) : null; });
+  tc.addEventListener('mouseDown', () => {
+    before = currentMesh ? worldTRS(currentMesh) : null;
+    if (currentMesh && !altMode && hasMask(currentMesh.geometry)) startLiveDeform();
+  });
+  tc.addEventListener('objectChange', () => { if (live) applyLiveDeform(); });
   tc.addEventListener('mouseUp', onMouseUp);
 }
 
@@ -108,37 +177,6 @@ function customizeGizmos(r, s) {
   vis.name = 'XYZ'; vis.renderOrder = Infinity; billboard(vis); gz.gizmo.scale.add(vis);
   const pick = new THREE.Mesh(new THREE.TorusGeometry(1.2, 0.08, 4, 48), new THREE.MeshBasicMaterial({ visible: false }));
   pick.name = 'XYZ'; billboard(pick); gz.picker.scale.add(pick);
-}
-
-function bakeMaskedTransform(mesh, before, after) {
-  const geom = mesh.geometry;
-  const mask = getMask(geom);
-  const pos = geom.attributes.position.array, nor = geom.attributes.normal.array;
-  const beforeM = new THREE.Matrix4().compose(before.p, before.q, before.s);
-  const afterM = new THREE.Matrix4().compose(after.p, after.q, after.s);
-  const beforeInv = beforeM.clone().invert();
-  state.scene.attach(mesh);
-
-  const wB = new THREE.Vector3(), wF = new THREE.Vector3(), lN = new THREE.Vector3();
-  const idxArr = [], oldA = [];
-  for (let i = 0; i < mask.length; i++) {
-    const w = 1 - mask[i]; if (w <= 0.001) continue;
-    const v3 = i * 3, lx = pos[v3], ly = pos[v3 + 1], lz = pos[v3 + 2];
-    wB.set(lx, ly, lz).applyMatrix4(beforeM);
-    wF.set(lx, ly, lz).applyMatrix4(afterM);
-    lN.set(wB.x + (wF.x - wB.x) * w, wB.y + (wF.y - wB.y) * w, wB.z + (wF.z - wB.z) * w).applyMatrix4(beforeInv);
-    idxArr.push(i); oldA.push(lx, ly, lz, nor[v3], nor[v3 + 1], nor[v3 + 2]);
-    pos[v3] = lN.x; pos[v3 + 1] = lN.y; pos[v3 + 2] = lN.z;
-  }
-  mesh.position.copy(before.p); mesh.quaternion.copy(before.q); mesh.scale.copy(before.s); mesh.updateMatrixWorld(true);
-  geom.attributes.position.needsUpdate = true;
-  geom.computeVertexNormals();
-  if (geom.boundsTree) geom.boundsTree.refit();
-
-  const indices = new Uint32Array(idxArr), old = Float32Array.from(oldA), neu = new Float32Array(indices.length * 6);
-  for (let k = 0; k < indices.length; k++) { const v3 = indices[k] * 3, o = k * 6; neu[o] = pos[v3]; neu[o + 1] = pos[v3 + 1]; neu[o + 2] = pos[v3 + 2]; neu[o + 3] = nor[v3]; neu[o + 4] = nor[v3 + 1]; neu[o + 5] = nor[v3 + 2]; }
-  pushGeom({ mesh, indices, old, new: neu });
-  activateGizmo(mesh);
 }
 
 export function activateGizmo(mesh) {
