@@ -147,6 +147,16 @@
 
   <div class="param">
     <label>
+      <span class="param-label">Mode coupe</span>
+      <select id="split-mode" title="Rapide (CDT) : rapide, quelques soucis sur low-poly. Précise (CSG) : robuste mais lente.">
+        <option value="fast">Rapide (CDT)</option>
+        <option value="csg">Précise (CSG, lent)</option>
+      </select>
+    </label>
+  </div>
+
+  <div class="param">
+    <label>
       <span class="param-label">Détail coupe</span>
       <input type="range" id="cutdetail-range" min="1" max="24" value="10" step="1">
       <span class="param-val" id="cutdetail-val">10</span>
@@ -190,7 +200,8 @@
     "imports": {
       "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
       "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/",
-      "three-mesh-bvh": "https://cdn.jsdelivr.net/npm/three-mesh-bvh@0.7.8/build/index.module.js"
+      "three-mesh-bvh": "https://cdn.jsdelivr.net/npm/three-mesh-bvh@0.7.8/build/index.module.js",
+      "three-bvh-csg": "https://cdn.jsdelivr.net/npm/three-bvh-csg@0.0.17/build/index.module.js"
     }
   }
 </script>

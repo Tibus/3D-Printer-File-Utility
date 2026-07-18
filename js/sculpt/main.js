@@ -14,6 +14,7 @@ import {
   recordStrokeBegin, recordStrokeEnd,
 } from './brush.js';
 import { lassoSplitAsync } from './split.js';
+import { lassoSplitCSG } from './split-csg.js';
 import { pushGeom, pushAction, pushMask, undo, redo, setHistoryListener } from './history.js';
 import { initGizmo, activateGizmo, deactivateGizmo, setAltPivot, isGizmoActive } from './gizmo.js';
 import { ensureMask, invertMask, clearMask, setMaskBlur, rebuildMask, bakeMaskBlur, maskRecordBegin, maskRecordEnd } from './mask.js';
@@ -132,16 +133,25 @@ function performSplit() {
   const poly = lassoPts.map((p) => ({ x: p.x - rect.left, y: p.y - rect.top }));
   mesh.updateMatrixWorld(true);
 
-  // Le split tourne dans un worker : thread principal libre, barre de progression.
-  showLoading(true, 'Découpe...');
-  setProgress(0);
-  lassoSplitAsync(mesh.geometry, poly, state.camera, mesh.matrixWorld, rect.width, rect.height, state.params.cutDetail, setProgress)
+  const csg = state.params.splitMode === 'csg';
+  showLoading(true, csg ? 'Découpe (CSG, lent)…' : 'Découpe…');
+  setProgress(csg ? null : 0);
+  // Mode CSG : booléen bloquant sur le thread principal -> setTimeout pour laisser
+  // le spinner s'afficher avant le calcul. Mode rapide : worker (CDT) + progression.
+  const run = csg
+    ? new Promise((resolve) => setTimeout(() => {
+      const r = lassoSplitCSG(mesh.geometry, poly, state.camera, mesh.matrixWorld, rect.width, rect.height, state.params.cutDetail);
+      if (r) r.capMode = 'csg';
+      resolve(r);
+    }, 40))
+    : lassoSplitAsync(mesh.geometry, poly, state.camera, mesh.matrixWorld, rect.width, rect.height, state.params.cutDetail, setProgress);
+  run
     .then((res) => {
       if (!res) { setStatus('Le lasso n’a rien séparé.'); return; }
-      // Cap dégradé (repli, pas le CDT) : refuse la découpe pour ne PAS détruire le
-      // maillage courant avec des "lignes verticales" ni cascader sur les re-coupes.
-      if (res.capMode && res.capMode !== 'worker-cdt') {
-        setStatus('Découpe impossible ici : maillage trop peu dense sous le lasso (aucun sommet enclos). Clique « Subdiviser » puis réessaie, ou agrandis le tracé.');
+      // Cap dégradé (repli fast, pas le CDT ni le CSG) : refuse la découpe pour ne PAS
+      // détruire le maillage courant avec des "lignes verticales" ni cascader.
+      if (res.capMode && res.capMode !== 'worker-cdt' && res.capMode !== 'csg') {
+        setStatus('Découpe impossible ici : maillage trop peu dense sous le lasso. Passe en mode « Précise (CSG) », clique « Subdiviser », ou agrandis le tracé.');
         return;
       }
       // DoubleSide : l'orientation des parois n'est pas garantie.
@@ -477,6 +487,13 @@ bindSlider('size-range', 'size-num', 'size', (v) => v.toFixed(3));
   const apply = (v) => { state.params.cutDetail = v; range.value = v; val.textContent = `${Math.round(v)}`; };
   range.addEventListener('input', (e) => apply(parseInt(e.target.value, 10)));
   apply(state.params.cutDetail);
+}
+{
+  const sel = document.getElementById('split-mode');
+  if (sel) {
+    sel.value = state.params.splitMode;
+    sel.addEventListener('change', (e) => { state.params.splitMode = e.target.value; });
+  }
 }
 
 // ---------- UI : alpha ----------

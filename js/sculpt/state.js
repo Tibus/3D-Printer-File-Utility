@@ -50,6 +50,7 @@ export const state = {
     displayHelper: false,     // afficher le wireframe / bvh helper
     falloffHardness: 0.5,     // dureté du bord (0 = très doux, 1 = net)
     cutDetail: 10,            // finesse du retopo du cap (×10 cellules sur la diagonale)
+    splitMode: 'fast',        // 'fast' (CDT, worker) | 'csg' (booléen three-bvh-csg, lent mais robuste)
   },
 
   // Alpha du brush : { grid: Float32Array(n*n), n, name } — forme du coup.
