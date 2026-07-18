@@ -23,6 +23,7 @@ import { repairMesh } from './repair.js';
 import { hollowMesh } from './hollow.js';
 import { checkThickness } from './wallcheck.js';
 import { autoOrient } from './orient.js';
+import { decimateMesh } from './decimate.js';
 import { pushGeom, pushAction, pushMask, undo, redo, setHistoryListener } from './history.js';
 import { initGizmo, activateGizmo, deactivateGizmo, setAltPivot, isGizmoActive } from './gizmo.js';
 import { ensureMask, invertMask, clearMask, setMaskBlur, rebuildMask, bakeMaskBlur, maskRecordBegin, maskRecordEnd } from './mask.js';
@@ -461,6 +462,36 @@ async function runBoolean(op) {
   mm.addEventListener('input', (e) => { state.params.realSizeMM = Math.max(0, parseFloat(e.target.value) || 0); refresh(); });
   refresh();
 }
+{
+  const range = document.getElementById('decimate-range'), val = document.getElementById('decimate-val');
+  range.value = Math.round(state.params.decimateRatio * 100); val.textContent = `${Math.round(state.params.decimateRatio * 100)} %`;
+  range.addEventListener('input', (e) => { state.params.decimateRatio = parseInt(e.target.value, 10) / 100; val.textContent = `${e.target.value} %`; });
+}
+document.getElementById('decimate-btn').addEventListener('click', async () => {
+  const mesh = state.targetMesh;
+  if (!mesh) { setStatus('Aucun objet à décimer.'); return; }
+  if (mesh.userData._wallView) { setStatus('Quitte d’abord la vue épaisseur.'); return; }
+  if (isGizmoActive()) deactivateGizmo();
+  const beforeTris = mesh.geometry.index ? mesh.geometry.index.count / 3 : mesh.geometry.attributes.position.count / 3;
+  showLoading(true, 'Décimation…');
+  const startedAt = performance.now();
+  await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+  try {
+    const { geometry } = await decimateMesh(mesh.geometry, state.params.decimateRatio);
+    if (!geometry || geometry.index.count === 0) { setStatus('Décimation échouée.'); return; }
+    const newMesh = createObject(geometry, mesh.material.clone(), mesh.name);
+    newMesh.position.copy(mesh.position); newMesh.updateMatrixWorld(true);
+    const old = mesh;
+    detachObject(old); setActiveObject(newMesh); renderObjectList();
+    setStatus(`Décimé — ${beforeTris.toLocaleString()} → ${(geometry.index.count / 3).toLocaleString()} triangles`);
+    pushAction(
+      () => { detachObject(newMesh); attachObject(old); setActiveObject(old); renderObjectList(); },
+      () => { detachObject(old); attachObject(newMesh); setActiveObject(newMesh); renderObjectList(); },
+      () => { for (const m of [old, newMesh]) if (!state.objects.includes(m)) disposeObject(m); },
+    );
+  } catch (err) { console.error(err); setStatus(`Décimation : ${err.message}`); }
+  finally { const wait = Math.max(0, 250 - (performance.now() - startedAt)); setTimeout(() => showLoading(false), wait); }
+});
 document.getElementById('orient-btn').addEventListener('click', async () => {
   const mesh = state.targetMesh;
   if (!mesh) { setStatus('Aucun objet à orienter.'); return; }

@@ -54,6 +54,7 @@ export const state = {
     remeshRes: 80,            // résolution du voxel remesh (cellules sur la plus grande dimension)
     hollowThickness: 0.04,    // épaisseur de coque (fraction de la plus grande dimension)
     realSizeMM: 0,            // taille réelle (mm) de la plus grande dimension (0 = non défini)
+    decimateRatio: 0.25,      // fraction de triangles à garder à la décimation
   },
 
   // Alpha du brush : { grid: Float32Array(n*n), n, name } — forme du coup.
