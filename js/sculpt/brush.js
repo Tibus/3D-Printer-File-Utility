@@ -45,6 +45,7 @@ const CURSOR_NORMAL_FACTOR = 0.4;
 const DRAW_OFFSET = 0.05;   // ajout par coup (fraction du rayon) à 100%
 const FLATTEN_STR = 0.25;   // fraction de la distance au plan rattrapée
 const BUILD_HEIGHT = 0.5;   // "genou" de résistance du draw (× rayon × force) — pas un plafond dur
+const PINCH_STR = 0.4;      // force du pincement (pinch/crease) par coup
 
 // Accumulation du draw par stroke : résistance asymptotique (ne s'arrête jamais,
 // mais ralentit en montant) pour accumuler sans pyramide rapide. Réinit via _accId.
@@ -335,6 +336,23 @@ function applyFastStroke(pos, nor, tool, size, intensity, invert, neighbors, mas
         const w = f * strength;
         x += (ax * li - x) * w; y += (ay * li - y) * w; z += (az * li - z) * w;
       }
+    } else if (tool === 'inflate') {
+      // gonfle le long de la normale PROPRE de chaque sommet (invert = dégonfle)
+      const acc = accStamp[v] === accId ? accBuf[v] : 0;
+      const room = 1 / (1 + Math.abs(acc) / maxHeight);
+      const s = maxOffset * f * sign * room;
+      accBuf[v] = acc + s; accStamp[v] = accId;
+      x += nor[v3] * s; y += nor[v3 + 1] * s; z += nor[v3 + 2] * s;
+    } else if (tool === 'pinch') {
+      // rapproche les sommets du centre du brush (invert = écarte)
+      const w = f * strength * PINCH_STR * sign;
+      x += (lcx - x) * w; y += (lcy - y) * w; z += (lcz - z) * w;
+    } else if (tool === 'crease') {
+      // pincement vers le centre + déplacement le long de la normale moyenne (crête nette)
+      const wp = f * strength * PINCH_STR;
+      x += (lcx - x) * wp; y += (lcy - y) * wp; z += (lcz - z) * wp;
+      const s = maxOffset * f * sign;
+      x += nx * s; y += ny * s; z += nz * s;
     }
 
     if (mask) { const w = 1 - mask[v]; x = ox + (x - ox) * w; y = oy + (y - oy) * w; z = oz + (z - oz) * w; } // influence partielle
@@ -443,6 +461,20 @@ function applySeamStroke(pos, nor, tool, size, intensity, invert, mask) {
         const li = 1 / nb.length, w = f * strength;
         x += (ax * li - x) * w; y += (ay * li - y) * w; z += (az * li - z) * w;
       }
+    } else if (tool === 'inflate') {
+      const acc = accStamp[r] === accId ? accBuf[r] : 0;
+      const room = 1 / (1 + Math.abs(acc) / maxHeight);
+      const s = maxOffset * f * sign * room;
+      accBuf[r] = acc + s; accStamp[r] = accId;
+      x += nor[v3] * s; y += nor[v3 + 1] * s; z += nor[v3 + 2] * s;
+    } else if (tool === 'pinch') {
+      const w = f * strength * PINCH_STR * sign;
+      x += (lcx - x) * w; y += (lcy - y) * w; z += (lcz - z) * w;
+    } else if (tool === 'crease') {
+      const wp = f * strength * PINCH_STR;
+      x += (lcx - x) * wp; y += (lcy - y) * wp; z += (lcz - z) * wp;
+      const s = maxOffset * f * sign;
+      x += nx * s; y += ny * s; z += nz * s;
     }
 
     if (mask) { const w = 1 - mask[r]; x = ox + (x - ox) * w; y = oy + (y - oy) * w; z = oz + (z - oz) * w; }
