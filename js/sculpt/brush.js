@@ -551,9 +551,9 @@ export function moveGrab() {
     pos[i3 + 1] = sp[k * 3 + 1] + dy * wk;
     pos[i3 + 2] = sp[k * 3 + 2] + dz * wk;
   }
-  // Pendant le drag : uniquement la position (runs). Les normales (coûteuses) et
-  // le refit sont reportés à endGrab — un move est une translation, le shading
-  // peut se recaler au relâcher. Bonus : pas d'upload de normales -> stall réduit.
+  // Pendant le drag : uniquement la position. L'ombrage suit quand même car le
+  // matériau est en flatShading (normale calculée par fragment via dérivées de la
+  // position). Normales de sommets + refit BVH reportés à endGrab (cursor/export/BVH).
   addRuns(posAttr, g.ranges);
   if (P) { P.apply += performance.now() - t0; P.count++; P.affected = arr.length; P.tris = g.triangles.length; }
 
@@ -564,7 +564,7 @@ export function endGrab() {
   const g = state.grab;
   if (g.active && g.needsRefit && state.targetMesh) {
     const geometry = state.targetMesh.geometry;
-    updateNormalsFromTriangles(g.triangles, g.triangles.length); // recale les normales
+    updateNormalsFromTriangles(g.triangles, g.triangles.length); // pour cursor/export (rendu = flatShading)
     addRuns(geometry.attributes.normal, g.ranges);
     geometry.boundsTree.refit(g.nodes);
     g.needsRefit = false;

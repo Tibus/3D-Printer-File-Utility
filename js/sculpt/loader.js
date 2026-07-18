@@ -117,8 +117,11 @@ function hasVertexColors(root) {
 // ---------- Matériaux ----------
 
 function clayMaterial() {
+  // flatShading : la normale est calculée par fragment (dérivées de la position),
+  // donc l'ombrage suit les déformations en live sans recalcul des normales de
+  // sommets pendant le drag — et fait mieux ressortir les détails sculptés.
   return new THREE.MeshStandardMaterial({
-    color: CLAY_COLOR, roughness: 0.65, metalness: 0.0, flatShading: false,
+    color: CLAY_COLOR, roughness: 0.65, metalness: 0.0, flatShading: true,
   });
 }
 

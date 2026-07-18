@@ -88,7 +88,8 @@ function applyLiveDeform() {
     const tz = e[2] * ox + e[6] * oy + e[10] * oz + e[14];
     pos[v3] = ox + (tx - ox) * w; pos[v3 + 1] = oy + (ty - oy) * w; pos[v3 + 2] = oz + (tz - oz) * w;
   }
-  geom.attributes.position.needsUpdate = true; // normales/BVH recalculées au relâchement (perf)
+  geom.attributes.position.needsUpdate = true;
+  // Ombrage live via flatShading (dérivées de position) ; normales de sommets + BVH au relâchement.
 }
 
 // Relâchement : normales + BVH + entrée d'annulation (vertex non totalement masqués).
