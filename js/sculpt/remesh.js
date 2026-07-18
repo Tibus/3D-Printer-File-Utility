@@ -78,6 +78,34 @@ export function buildSDF(geometry, resolution) {
   return { sdf, bounds, edgeLength, maxDim };
 }
 
+// Retire les petites composantes connexes déconnectées (blobs isolés dus aux erreurs
+// de signe du SDF sur les zones fines/non-manifold). Garde tout composant >= frac × le
+// plus gros. Géométrie POSITION seule (avant réprojection). Retourne g inchangé si rien.
+function removeBlobs(g, frac) {
+  const idx = g.index.array, V = g.attributes.position.count, nTri = idx.length / 3;
+  const parent = new Uint32Array(V); for (let i = 0; i < V; i++) parent[i] = i;
+  const find = (x) => { while (parent[x] !== x) { parent[x] = parent[parent[x]]; x = parent[x]; } return x; };
+  const union = (a, b) => { a = find(a); b = find(b); if (a !== b) parent[a] = b; };
+  for (let t = 0; t < nTri; t++) { union(idx[t * 3], idx[t * 3 + 1]); union(idx[t * 3 + 1], idx[t * 3 + 2]); }
+  const count = new Map();
+  for (let t = 0; t < nTri; t++) { const r = find(idx[t * 3]); count.set(r, (count.get(r) || 0) + 1); }
+  if (count.size <= 1) return g;
+  let maxC = 0; for (const c of count.values()) if (c > maxC) maxC = c;
+  const minKeep = Math.max(4, maxC * frac);
+  const pos = g.attributes.position.array;
+  const remap = new Map(); const outPos = []; const outIdx = []; let kept = 0;
+  for (let t = 0; t < nTri; t++) {
+    if (count.get(find(idx[t * 3])) < minKeep) continue;
+    kept++;
+    for (let k = 0; k < 3; k++) { const v = idx[t * 3 + k]; let nv = remap.get(v); if (nv === undefined) { nv = remap.size; remap.set(v, nv); outPos.push(pos[v * 3], pos[v * 3 + 1], pos[v * 3 + 2]); } outIdx.push(nv); }
+  }
+  if (kept === nTri) return g;
+  const ng = new THREE.BufferGeometry();
+  ng.setAttribute('position', new THREE.Float32BufferAttribute(outPos, 3));
+  ng.setIndex(outIdx);
+  return ng;
+}
+
 // Construit une géométrie THREE (position + normales) à partir d'un Manifold Mesh.
 export function geomFromManifoldMesh(mm) {
   const numProp = mm.numProp, vp = mm.vertProperties, V = vp.length / numProp;
@@ -111,9 +139,10 @@ export async function voxelRemesh(geometry, resolution = 64) {
   const outIdx = mm.triVerts instanceof Uint32Array ? mm.triVerts.slice() : new Uint32Array(mm.triVerts);
   man.delete();
 
-  const g = new THREE.BufferGeometry();
+  let g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.BufferAttribute(outPos, 3));
   g.setIndex(new THREE.BufferAttribute(outIdx, 1));
+  g = removeBlobs(g, 0.02); // retire les petites sphères parasites (erreurs de signe SDF)
   g.computeVertexNormals();
   reprojectAttrs(g, geometry);
   return g;
