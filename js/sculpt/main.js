@@ -140,17 +140,18 @@ function performSplit() {
   const g = mesh.geometry, cam = state.camera, mw = mesh.matrixWorld, w = rect.width, h = rect.height, det = state.params.cutDetail;
   showLoading(true, csg ? 'Découpe (booléen)…' : 'Découpe…');
   setProgress(csg ? null : 0);
+  const startedAt = performance.now();
   // Mode "précis" : d'abord LOCALISÉ (booléen sur la zone du lasso seulement -> rapide).
   // Si non applicable (petit maillage / lasso couvrant tout), Manifold (watertight) puis
-  // three-bvh-csg. setTimeout : laisse le spinner s'afficher avant le calcul bloquant.
+  // three-bvh-csg. Double rAF : GARANTIT le rendu du spinner avant le calcul bloquant.
   const run = csg
-    ? new Promise((resolve) => setTimeout(async () => {
+    ? new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(async () => {
       const loc = lassoSplitLocalized(g, poly, cam, mw, w, h, det, lassoSplitCSG);
       if (loc && !loc.fallback) { resolve(loc); return; }
       let r = await lassoSplitManifold(g, poly, cam, mw, w, h, det);
       if (r && r.fallback) { const c = lassoSplitCSG(g, poly, cam, mw, w, h, det); if (c) c.capMode = 'csg'; r = c; }
       resolve(r);
-    }, 30))
+    })))
     : lassoSplitAsync(g, poly, cam, mw, w, h, det, setProgress);
   run
     .then((res) => {
@@ -177,7 +178,12 @@ function performSplit() {
       );
     })
     .catch((err) => { console.error(err); setStatus(`Split : ${err.message}`); })
-    .finally(() => { showLoading(false); setProgress(null); });
+    .finally(() => {
+      // durée minimale d'affichage du spinner (les coupes localisées sont très rapides
+      // -> sinon le loading ne serait pas visible).
+      const wait = Math.max(0, 250 - (performance.now() - startedAt));
+      setTimeout(() => { showLoading(false); setProgress(null); }, wait);
+    });
 }
 
 // ---------- Liste d'objets ----------
