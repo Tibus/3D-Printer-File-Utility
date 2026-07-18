@@ -12,13 +12,30 @@ const mkWorker = () => new Worker(new URL('./split-worker.js', import.meta.url),
 function getPool() { if (!_pool) _pool = Array.from({ length: POOL_SIZE }, mkWorker); return _pool; }
 function getSingle() { if (!_single) _single = mkWorker(); return _single; }
 
-function once(worker) {
+// Détruit les workers en cache (après un timeout : le thread peut être bloqué
+// dans une boucle -> terminate() le tue et le prochain appel recrée du neuf).
+function resetPool() { if (_pool) { for (const w of _pool) w.terminate(); _pool = null; } }
+function resetSingle() { if (_single) { _single.terminate(); _single = null; } }
+
+// Timeouts (ms) : garde-fous contre un worker qui ne répond jamais (ex. CDT du
+// cap qui boucle sur une coupe dégénérée). Sans ça : spinner infini.
+const TO_CLASSIFY = 30000, TO_PATCHES = 30000, TO_FULL = 45000, TO_RETOPO = 20000;
+
+// Attend UN message du worker. `timeout`>0 : rejette après ce délai (et appelle
+// onTimeout, typiquement pour tuer le worker bloqué).
+function once(worker, { timeout = 0, label = 'worker', onTimeout } = {}) {
   return new Promise((res, rej) => {
+    let timer = null;
+    const cleanup = () => {
+      worker.removeEventListener('message', h);
+      worker.removeEventListener('error', eh);
+      if (timer) { clearTimeout(timer); timer = null; }
+    };
     const h = (e) => { cleanup(); res(e.data); };
-    const eh = (e) => { cleanup(); rej(new Error(e.message || 'worker error')); };
-    const cleanup = () => { worker.removeEventListener('message', h); worker.removeEventListener('error', eh); };
+    const eh = (e) => { cleanup(); rej(new Error(e.message || `${label} error`)); };
     worker.addEventListener('message', h);
     worker.addEventListener('error', eh);
+    if (timeout > 0) timer = setTimeout(() => { cleanup(); if (onTimeout) onTimeout(); rej(new Error(`${label} timeout (${timeout} ms)`)); }, timeout);
   });
 }
 
@@ -251,7 +268,7 @@ async function splitPooled(bufs, M, lasso, vw, vh, onProgress) {
     const start = i * vChunk, end = Math.min(vCount, (i + 1) * vChunk);
     if (start >= end) break;
     pool[i].postMessage({ type: 'classify', posSAB, M, lasso, vw, vh, insideSAB, sxSAB, sySAB, start, end });
-    cTasks.push(once(pool[i]));
+    cTasks.push(once(pool[i], { timeout: TO_CLASSIFY, label: 'classify', onTimeout: resetPool }));
   }
   await Promise.all(cTasks);
   if (onProgress) onProgress(0.55);
@@ -264,7 +281,7 @@ async function splitPooled(bufs, M, lasso, vw, vh, onProgress) {
     const start = i * triChunk, end = Math.min(triTotal, (i + 1) * triChunk);
     if (start >= end) break;
     pool[i].postMessage({ type: 'patches', posSAB, norSAB, uvSAB, colSAB, idxSAB, idx32, insideSAB, sxSAB, sySAB, lasso, vCount, start, end });
-    pTasks.push(once(pool[i]));
+    pTasks.push(once(pool[i], { timeout: TO_PATCHES, label: 'patches', onTimeout: resetPool }));
   }
   const results = await Promise.all(pTasks);
   if (onProgress) onProgress(0.9);
@@ -275,7 +292,7 @@ async function splitSingle(bufs, M, lasso, vw, vh) {
   const w = getSingle();
   const { posArr, norArr, uvArr, colArr, idxArr } = bufs;
   w.postMessage({ type: 'full', position: posArr, normal: norArr, uv: uvArr, color: colArr, index: idxArr, M, lasso, vw, vh });
-  const r = await once(w);
+  const r = await once(w, { timeout: TO_FULL, label: 'split', onTimeout: resetSingle });
   if (r.type === 'error') throw new Error(r.message);
   return [{ A: r.A, B: r.B, cutKA: r.cutKA, cutKB: r.cutKB, cutPos: r.cutPos }];
 }
@@ -508,7 +525,7 @@ function sweepFillWalls(loopData, hasUV, hasColor) {
 }
 
 // Lance le retopo du cap (Delaunay + CDT) dans un worker -> ne gèle pas l'UI.
-function retopoInWorker(loopData, ctx) {
+async function retopoInWorker(loopData, ctx) {
   const w = getSingle();
   const loopsFlat = [], loopLens = [];
   for (const loop of loopData.loops) { loopLens.push(loop.length); for (const id of loop) loopsFlat.push(id); }
@@ -522,10 +539,15 @@ function retopoInWorker(loopData, ctx) {
     camPos: { x: ctx.camPos.x, y: ctx.camPos.y, z: ctx.camPos.z }, camFwd: { x: ctx.camFwd.x, y: ctx.camFwd.y, z: ctx.camFwd.z },
     vw: ctx.vw, vh: ctx.vh, detail: ctx.detail,
   });
-  return once(w).then((r) => {
+  try {
+    const r = await once(w, { timeout: TO_RETOPO, label: 'retopo', onTimeout: resetSingle });
     if (r.type === 'error') throw new Error(r.message);
     return r.position ? { position: r.position, index: r.index, failed: r.failed, repaired: r.repaired, capStats: r.capStats } : null;
-  });
+  } catch (err) {
+    // Timeout (CDT bloqué) : on renvoie null -> parois par fallback géométrique.
+    if (/timeout/.test(err.message)) { globalThis.__wallDebug = { ...(globalThis.__wallDebug || {}), retopoTimeout: true }; return null; }
+    throw err;
+  }
 }
 
 // Partiel cap (avec normales) depuis la sortie brute du worker.
