@@ -47,11 +47,12 @@ function earClip(u, v) {
   return out;
 }
 
-// Construit le prisme fermé du lasso : polygone triangulé + extrusion near→far
-// par unprojection (frustum caméra), subdivisée en `rings` anneaux en profondeur
-// pour trianguler plus finement les parois (donc la découpe). Attributs alignés
-// sur ceux du mesh.
-function buildPrism(lassoPx, camera, vw, vh, hasUV, hasColor, rings) {
+// Construit le prisme fermé du lasso : polygone triangulé + extrusion le long des
+// rayons caméra. Les `rings` anneaux sont concentrés dans la TRANCHE DE PROFONDEUR
+// de l'objet (dRange = {dmin,dmax} en profondeur vue) : les parois de coupe (=le
+// grillage/croisillon) sont ainsi finement subdivisées LÀ où l'objet est traversé,
+// pas gaspillées sur tout le frustum. Attributs alignés sur ceux du mesh.
+function buildPrism(lassoPx, camera, vw, vh, hasUV, hasColor, rings, dRange) {
   const n = lassoPx.length;
   const ndcX = [], ndcY = [];
   for (let i = 0; i < n; i++) { ndcX.push((lassoPx[i].x / vw) * 2 - 1); ndcY.push(-(lassoPx[i].y / vh) * 2 + 1); }
@@ -63,16 +64,23 @@ function buildPrism(lassoPx, camera, vw, vh, hasUV, hasColor, rings) {
 
   const capTris = earClip(ndcX, ndcY);
 
-  // Anneaux : row 0 = near ... row `rings` = far. Interpolation linéaire en monde
-  // (les parois du frustum sont des droites near->far).
+  const camPos = new THREE.Vector3(); camera.getWorldPosition(camPos);
+  const camFwd = new THREE.Vector3(); camera.getWorldDirection(camFwd);
+
+  // Anneaux distribués dans [dmin,dmax] (profondeur vue). Par rayon, on convertit
+  // ces profondeurs en param t le long de near→far (perspective-correct).
   const rows = rings + 1;
   const near = new THREE.Vector3(), far = new THREE.Vector3();
   const positions = new Float32Array(rows * n * 3);
   for (let i = 0; i < n; i++) {
     near.set(ndcX[i], ndcY[i], -1).unproject(camera);
     far.set(ndcX[i], ndcY[i], 1).unproject(camera);
+    const dNear = (near.x - camPos.x) * camFwd.x + (near.y - camPos.y) * camFwd.y + (near.z - camPos.z) * camFwd.z;
+    const dFar = (far.x - camPos.x) * camFwd.x + (far.y - camPos.y) * camFwd.y + (far.z - camPos.z) * camFwd.z;
+    const span = (dFar - dNear) || 1e-6;
+    const t0 = (dRange.dmin - dNear) / span, t1 = (dRange.dmax - dNear) / span;
     for (let r = 0; r < rows; r++) {
-      const t = r / rings;
+      const t = t0 + (t1 - t0) * (r / rings);
       const o = (r * n + i) * 3;
       positions[o] = near.x + (far.x - near.x) * t;
       positions[o + 1] = near.y + (far.y - near.y) * t;
@@ -112,12 +120,48 @@ function buildPrism(lassoPx, camera, vw, vh, hasUV, hasColor, rings) {
   return g;
 }
 
+// Rééchantillonne le lasso fermé à un pas régulier (px) -> périmètre dense = plus
+// de "colonnes" de grille sur les parois de coupe.
+function resampleLasso(pts, step) {
+  const out = [];
+  const n = pts.length;
+  for (let i = 0; i < n; i++) {
+    const a = pts[i], b = pts[(i + 1) % n];
+    const dx = b.x - a.x, dy = b.y - a.y;
+    const segs = Math.max(1, Math.round(Math.hypot(dx, dy) / step));
+    for (let s = 0; s < segs; s++) { const t = s / segs; out.push({ x: a.x + dx * t, y: a.y + dy * t }); }
+  }
+  return out;
+}
+
 export function lassoSplitCSG(geometry, lassoPx, camera, matrixWorld, vw, vh, detail = 6) {
   if (lassoPx.length < 3) return null;
   const hasUV = !!geometry.attributes.uv;
   const hasColor = !!geometry.attributes.color;
+  const d = Math.max(1, detail | 0);
 
-  const prismGeo = buildPrism(lassoPx, camera, vw, vh, hasUV, hasColor, Math.max(1, detail | 0));
+  // Tranche de profondeur (vue) occupée par l'objet -> on y concentre les anneaux.
+  camera.updateMatrixWorld();
+  const camPos = new THREE.Vector3(); camera.getWorldPosition(camPos);
+  const camFwd = new THREE.Vector3(); camera.getWorldDirection(camFwd);
+  geometry.computeBoundingBox();
+  const bb = geometry.boundingBox, c = new THREE.Vector3();
+  let dmin = Infinity, dmax = -Infinity;
+  for (let xi = 0; xi < 2; xi++) for (let yi = 0; yi < 2; yi++) for (let zi = 0; zi < 2; zi++) {
+    c.set(xi ? bb.max.x : bb.min.x, yi ? bb.max.y : bb.min.y, zi ? bb.max.z : bb.min.z).applyMatrix4(matrixWorld);
+    const dv = (c.x - camPos.x) * camFwd.x + (c.y - camPos.y) * camFwd.y + (c.z - camPos.z) * camFwd.z;
+    if (dv < dmin) dmin = dv; if (dv > dmax) dmax = dv;
+  }
+  const margin = Math.max((dmax - dmin) * 0.04, 1e-3); // caps hors de l'objet
+  const dRange = { dmin: dmin - margin, dmax: dmax + margin };
+
+  // périmètre dense + anneaux ~ detail -> grille (croisillon) sur les parois
+  const step = Math.max(3, Math.min(vw, vh) / (d * 12));
+  let lasso = resampleLasso(lassoPx, step);
+  if (lasso.length > 600) lasso = resampleLasso(lassoPx, step * (lasso.length / 600)); // garde-fou perf
+  const rings = Math.max(4, d);
+
+  const prismGeo = buildPrism(lasso, camera, vw, vh, hasUV, hasColor, rings, dRange);
 
   const attrs = ['position', 'normal'];
   if (hasUV) attrs.push('uv');
