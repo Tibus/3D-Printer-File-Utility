@@ -21,6 +21,7 @@ import { voxelRemesh } from './remesh.js';
 import { booleanObjects } from './boolean.js';
 import { repairMesh } from './repair.js';
 import { hollowMesh } from './hollow.js';
+import { checkThickness } from './wallcheck.js';
 import { pushGeom, pushAction, pushMask, undo, redo, setHistoryListener } from './history.js';
 import { initGizmo, activateGizmo, deactivateGizmo, setAltPivot, isGizmoActive } from './gizmo.js';
 import { ensureMask, invertMask, clearMask, setMaskBlur, rebuildMask, bakeMaskBlur, maskRecordBegin, maskRecordEnd } from './mask.js';
@@ -459,6 +460,36 @@ async function runBoolean(op) {
   mm.addEventListener('input', (e) => { state.params.realSizeMM = Math.max(0, parseFloat(e.target.value) || 0); refresh(); });
   refresh();
 }
+document.getElementById('wallcheck-btn').addEventListener('click', async () => {
+  const mesh = state.targetMesh;
+  if (!mesh) { setStatus('Aucun objet.'); return; }
+  const g = mesh.geometry;
+  if (mesh.userData._wallView) { // revenir en vue normale
+    if (mesh.userData._wallSavedMat) mesh.material = mesh.userData._wallSavedMat;
+    g.deleteAttribute('color');
+    mesh.userData._wallView = false; mesh.userData._wallSavedMat = null;
+    setStatus('Vue normale.');
+    return;
+  }
+  if (isGizmoActive()) deactivateGizmo();
+  showLoading(true, 'Analyse d’épaisseur…');
+  const startedAt = performance.now();
+  await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+  try {
+    g.computeBoundingBox();
+    const s = new THREE.Vector3(); g.boundingBox.getSize(s);
+    const maxDim = Math.max(s.x, s.y, s.z) || 1;
+    const threshold = state.params.hollowThickness * maxDim;
+    const { colors, thinFrac } = checkThickness(g, threshold);
+    g.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+    mesh.userData._wallSavedMat = mesh.material;
+    mesh.material = new THREE.MeshStandardMaterial({ vertexColors: true, flatShading: true, roughness: 0.85, metalness: 0, side: mesh.material.side || THREE.FrontSide });
+    mesh.userData._wallView = true;
+    const mmTxt = state.params.realSizeMM > 0 ? ` (seuil ≈ ${(state.params.hollowThickness * state.params.realSizeMM).toFixed(1)} mm)` : '';
+    setStatus(`${(thinFrac * 100).toFixed(1)} % de la surface trop fine — en rouge${mmTxt}. Reclique pour revenir.`);
+  } catch (err) { console.error(err); setStatus(`Vérif épaisseur : ${err.message}`); }
+  finally { const wait = Math.max(0, 250 - (performance.now() - startedAt)); setTimeout(() => showLoading(false), wait); }
+});
 document.getElementById('hollow-btn').addEventListener('click', async () => {
   const mesh = state.targetMesh;
   if (!mesh) { setStatus('Aucun objet à évider.'); return; }
