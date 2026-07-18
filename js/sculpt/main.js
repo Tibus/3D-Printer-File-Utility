@@ -18,6 +18,7 @@ import { lassoSplitCSG } from './split-csg.js';
 import { lassoSplitManifold, warmupManifold } from './split-manifold.js';
 import { lassoSplitLocalized } from './split-local.js';
 import { voxelRemesh } from './remesh.js';
+import { booleanObjects } from './boolean.js';
 import { pushGeom, pushAction, pushMask, undo, redo, setHistoryListener } from './history.js';
 import { initGizmo, activateGizmo, deactivateGizmo, setAltPivot, isGizmoActive } from './gizmo.js';
 import { ensureMask, invertMask, clearMask, setMaskBlur, rebuildMask, bakeMaskBlur, maskRecordBegin, maskRecordEnd } from './mask.js';
@@ -239,7 +240,29 @@ function renderObjectList() {
     row.append(name, eye, del);
     list.appendChild(row);
   });
+  refreshBoolTargets();
 }
+
+// Peuple le sélecteur de cible booléenne (tous les objets sauf l'actif) et masque la
+// section s'il y a moins de 2 objets.
+function refreshBoolTargets() {
+  const sec = document.getElementById('bool-section');
+  const sel = document.getElementById('bool-target');
+  if (!sec || !sel) return;
+  const others = state.objects.filter((o) => o !== state.targetMesh);
+  sec.style.display = others.length ? '' : 'none';
+  const prev = sel.value;
+  sel.innerHTML = '';
+  for (let i = 0; i < state.objects.length; i++) {
+    const o = state.objects[i];
+    if (o === state.targetMesh) continue;
+    const opt = document.createElement('option');
+    opt.value = String(i); opt.textContent = o.name;
+    sel.appendChild(opt);
+  }
+  if (prev && [...sel.options].some((o) => o.value === prev)) sel.value = prev;
+}
+
 setOnObjectsChanged(renderObjectList);
 renderObjectList();
 window.__objects = state.objects; // debug (comme window.__perf)
@@ -392,6 +415,38 @@ document.getElementById('remesh-btn').addEventListener('click', async () => {
   } catch (err) { console.error(err); setStatus(`Remesh : ${err.message}`); }
   finally { const wait = Math.max(0, 300 - (performance.now() - startedAt)); setTimeout(() => showLoading(false), wait); }
 });
+
+// ---------- Booléens entre objets ----------
+async function runBoolean(op) {
+  const A = state.targetMesh;
+  const sel = document.getElementById('bool-target');
+  const B = sel ? state.objects[parseInt(sel.value, 10)] : null;
+  if (!A || !B || A === B) { setStatus('Sélectionne deux objets différents.'); return; }
+  if (isGizmoActive()) deactivateGizmo();
+  showLoading(true, 'Booléen…');
+  const startedAt = performance.now();
+  await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+  try {
+    const res = await booleanObjects(A, B, op);
+    if (!res || res.fallback) {
+      setStatus(res && res.fallback ? 'Booléen impossible (maillage non-manifold — fais un « Voxel remesh » d’abord).' : 'Booléen : rien produit.');
+      return;
+    }
+    const newMesh = createObject(res.geometry, A.material.clone(), `${A.name} ⊕`); // géométrie déjà en monde
+    const a = A, b = B;
+    detachObject(a); detachObject(b); setActiveObject(newMesh); renderObjectList();
+    setStatus('Booléen effectué.');
+    pushAction(
+      () => { detachObject(newMesh); attachObject(a); attachObject(b); setActiveObject(a); renderObjectList(); },
+      () => { detachObject(a); detachObject(b); attachObject(newMesh); setActiveObject(newMesh); renderObjectList(); },
+      () => { for (const m of [a, b, newMesh]) if (!state.objects.includes(m)) disposeObject(m); },
+    );
+  } catch (err) { console.error(err); setStatus(`Booléen : ${err.message}`); }
+  finally { const wait = Math.max(0, 250 - (performance.now() - startedAt)); setTimeout(() => showLoading(false), wait); }
+}
+document.getElementById('bool-union').addEventListener('click', () => runBoolean('union'));
+document.getElementById('bool-subtract').addEventListener('click', () => runBoolean('subtract'));
+document.getElementById('bool-intersect').addEventListener('click', () => runBoolean('intersect'));
 
 // Undo / redo
 const undoBtn = document.getElementById('undo-btn');
