@@ -10,7 +10,7 @@ import * as THREE from 'three';
 import { buildLassoPrism } from './split-csg.js';
 
 let _wasmPromise = null;
-async function getManifold() {
+export async function getManifold() {
   if (!_wasmPromise) {
     _wasmPromise = (async () => {
       const M = await import('manifold-3d');

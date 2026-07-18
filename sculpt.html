@@ -146,6 +146,15 @@
 
   <button id="subdivide-btn" class="control-btn">🔺 Subdiviser (ajouter du détail)</button>
   <button id="separate-btn" class="control-btn">🧩 Séparer les parties indépendantes</button>
+  <button id="remesh-btn" class="control-btn" title="Reconstruit une topologie propre et watertight (répare les meshes IA). Conserve la texture.">🧊 Voxel remesh (nettoyer)</button>
+
+  <div class="param">
+    <label>
+      <span class="param-label">Résolution remesh</span>
+      <input type="range" id="remesh-range" min="24" max="220" value="80" step="4">
+      <span class="param-val" id="remesh-val">80</span>
+    </label>
+  </div>
 
   <div class="param">
     <label>

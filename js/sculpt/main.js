@@ -17,6 +17,7 @@ import { lassoSplitAsync } from './split.js';
 import { lassoSplitCSG } from './split-csg.js';
 import { lassoSplitManifold, warmupManifold } from './split-manifold.js';
 import { lassoSplitLocalized } from './split-local.js';
+import { voxelRemesh } from './remesh.js';
 import { pushGeom, pushAction, pushMask, undo, redo, setHistoryListener } from './history.js';
 import { initGizmo, activateGizmo, deactivateGizmo, setAltPivot, isGizmoActive } from './gizmo.js';
 import { ensureMask, invertMask, clearMask, setMaskBlur, rebuildMask, bakeMaskBlur, maskRecordBegin, maskRecordEnd } from './mask.js';
@@ -362,6 +363,34 @@ document.getElementById('new-scene-btn').addEventListener('click', () => {
   if (isGizmoActive()) deactivateGizmo();
   newScene();
   renderObjectList();
+});
+{
+  const range = document.getElementById('remesh-range'), val = document.getElementById('remesh-val');
+  range.value = state.params.remeshRes; val.textContent = state.params.remeshRes;
+  range.addEventListener('input', (e) => { state.params.remeshRes = parseInt(e.target.value, 10); val.textContent = state.params.remeshRes; });
+}
+document.getElementById('remesh-btn').addEventListener('click', async () => {
+  const mesh = state.targetMesh;
+  if (!mesh) { setStatus('Aucun objet à remailler.'); return; }
+  if (isGizmoActive()) deactivateGizmo();
+  showLoading(true, 'Voxel remesh…');
+  const startedAt = performance.now();
+  await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))); // affiche le spinner
+  try {
+    const geom = await voxelRemesh(mesh.geometry, state.params.remeshRes);
+    if (!geom || geom.index.count === 0) { setStatus('Remesh échoué (rien produit).'); return; }
+    const newMesh = createObject(geom, mesh.material.clone(), mesh.name);
+    newMesh.position.copy(mesh.position); newMesh.updateMatrixWorld(true);
+    const old = mesh;
+    detachObject(old); setActiveObject(newMesh); renderObjectList();
+    setStatus(`Remesh — ${geom.attributes.position.count.toLocaleString()} vertices, ${(geom.index.count / 3).toLocaleString()} triangles`);
+    pushAction(
+      () => { detachObject(newMesh); attachObject(old); setActiveObject(old); renderObjectList(); },
+      () => { detachObject(old); attachObject(newMesh); setActiveObject(newMesh); renderObjectList(); },
+      () => { for (const m of [old, newMesh]) if (!state.objects.includes(m)) disposeObject(m); },
+    );
+  } catch (err) { console.error(err); setStatus(`Remesh : ${err.message}`); }
+  finally { const wait = Math.max(0, 300 - (performance.now() - startedAt)); setTimeout(() => showLoading(false), wait); }
 });
 
 // Undo / redo
