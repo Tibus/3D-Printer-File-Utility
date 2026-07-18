@@ -172,7 +172,13 @@ function customizeGizmos(r, s) {
   // scale uniforme : grand anneau face caméra (remplace le rôle de l'ex grand cercle)
   const ringMat = gz.gizmo.scale.children.find((c) => c.name === 'XYZ');
   const col = (ringMat && ringMat.material && ringMat.material.color) ? ringMat.material.color.clone() : new THREE.Color(0xffff00);
-  const billboard = (obj) => { obj.onBeforeRender = () => { obj.parent.getWorldQuaternion(_pq).invert(); obj.quaternion.copy(state.camera.quaternion).premultiply(_pq); }; };
+  const billboard = (obj) => {
+    obj.onBeforeRender = () => {
+      obj.parent.getWorldQuaternion(_pq).invert();
+      obj.quaternion.copy(state.camera.quaternion).premultiply(_pq);
+      obj.updateMatrixWorld(true); // recalcule la matrice pour CE rendu (sinon billboard sans effet)
+    };
+  };
   const vis = new THREE.Mesh(new THREE.TorusGeometry(1.2, 0.006, 4, 64), new THREE.MeshBasicMaterial({ color: col, transparent: true, opacity: 0.85, depthTest: false, toneMapped: false }));
   vis.name = 'XYZ'; vis.renderOrder = Infinity; billboard(vis); gz.gizmo.scale.add(vis);
   const pick = new THREE.Mesh(new THREE.TorusGeometry(1.2, 0.08, 4, 48), new THREE.MeshBasicMaterial({ visible: false }));
