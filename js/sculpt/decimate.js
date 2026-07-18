@@ -1,30 +1,30 @@
 // Décimation (low-poly) par QEM edge-collapse via meshoptimizer (WASM). C'est le cœur
 // reproductible de méthodes type TriFlow : QEM garde la fidélité géométrique et un nombre
 // de triangles cible. (Le "flow" artiste de TriFlow vient d'un réseau de neurones non
-// publié — hors navigateur ; on garde donc la partie QEM.) Préserve position + uv + color
-// des sommets survivants ; normales recalculées.
+// publié — hors navigateur ; on garde donc la partie QEM.)
+//
+// WATERTIGHT garanti : on soude par POSITION seule (les coutures UV, sinon non soudées,
+// seraient vues comme des bords et perceraient le maillage) -> topologie fermée -> QEM
+// préserve la fermeture. Les UV/couleurs sont ensuite RÉPROJETÉS depuis l'original
+// (point le plus proche), comme le voxel remesh.
 
 import * as THREE from 'three';
 import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
+import { MeshBVH } from 'three-mesh-bvh';
 import { MeshoptSimplifier } from 'meshoptimizer';
+import { reprojectAttrs } from './remesh.js';
 
-const ATTRS = ['position', 'uv', 'color'];
-const DIM = { position: 3, uv: 2, color: 3 };
-
-// Compacte : ne garde que les sommets référencés, remappe l'index.
-function compact(g) {
-  const attrs = ATTRS.filter((a) => g.attributes[a]);
-  const idx = g.index.array;
-  const src = {}; for (const a of attrs) src[a] = g.attributes[a].array;
-  const remap = new Map(); const out = {}; for (const a of attrs) out[a] = [];
-  const nidx = new Uint32Array(idx.length);
+// Compacte une géométrie POSITION-seule : ne garde que les sommets référencés.
+function compactPos(g) {
+  const idx = g.index.array, src = g.attributes.position.array;
+  const remap = new Map(); const out = []; const nidx = new Uint32Array(idx.length);
   for (let i = 0; i < idx.length; i++) {
     const v = idx[i]; let nv = remap.get(v);
-    if (nv === undefined) { nv = remap.size; remap.set(v, nv); for (const a of attrs) { const d = DIM[a], s = src[a]; for (let c = 0; c < d; c++) out[a].push(s[v * d + c]); } }
+    if (nv === undefined) { nv = remap.size; remap.set(v, nv); out.push(src[v * 3], src[v * 3 + 1], src[v * 3 + 2]); }
     nidx[i] = nv;
   }
   const ng = new THREE.BufferGeometry();
-  for (const a of attrs) ng.setAttribute(a, new THREE.Float32BufferAttribute(out[a], DIM[a]));
+  ng.setAttribute('position', new THREE.Float32BufferAttribute(out, 3));
   ng.setIndex(new THREE.BufferAttribute(nidx, 1));
   return ng;
 }
@@ -32,20 +32,34 @@ function compact(g) {
 // ratio : fraction de triangles à GARDER (0.1 = 10%). Retourne { geometry, tris, error }.
 export async function decimateMesh(geometry, ratio) {
   await MeshoptSimplifier.ready;
-  let g = geometry.clone(); g.deleteAttribute('normal');
-  if (!g.index) { const n = g.attributes.position.count; const ix = new Uint32Array(n); for (let i = 0; i < n; i++) ix[i] = i; g.setIndex(new THREE.BufferAttribute(ix, 1)); }
-  g = mergeVertices(g, 1e-5); // soude pour permettre les collapses
+  const hasUV = !!geometry.attributes.uv, hasColor = !!geometry.attributes.color;
 
-  const index = g.index.array instanceof Uint32Array ? g.index.array : new Uint32Array(g.index.array);
-  const pos = g.attributes.position.array instanceof Float32Array ? g.attributes.position.array : new Float32Array(g.attributes.position.array);
+  // 1) topologie watertight : soudure par POSITION seule
+  const posGeom = new THREE.BufferGeometry();
+  posGeom.setAttribute('position', geometry.attributes.position.clone());
+  if (geometry.index) posGeom.setIndex(geometry.index.clone());
+  else { const n = geometry.attributes.position.count; const ix = new Uint32Array(n); for (let i = 0; i < n; i++) ix[i] = i; posGeom.setIndex(new THREE.BufferAttribute(ix, 1)); }
+  const welded = mergeVertices(posGeom, 1e-5);
+
+  const index = welded.index.array instanceof Uint32Array ? welded.index.array : new Uint32Array(welded.index.array);
+  const pos = welded.attributes.position.array instanceof Float32Array ? welded.attributes.position.array : new Float32Array(welded.attributes.position.array);
   const triCount = index.length / 3;
   const targetIndexCount = Math.max(1, Math.floor(triCount * ratio)) * 3;
-  if (targetIndexCount >= index.length) return { geometry: g, tris: triCount, error: 0 }; // rien à faire
+  if (targetIndexCount >= index.length) { const out = compactPos(welded); if (hasUV || hasColor) reproject(out, geometry); out.computeVertexNormals(); return { geometry: out, tris: triCount, error: 0 }; }
 
-  // targetError élevé -> atteint le ratio demandé ; LockBorder préserve les bords ouverts.
+  // 2) simplification QEM (mesh fermé -> sortie watertight ; LockBorder protège les bords éventuels)
   const [simplified, error] = MeshoptSimplifier.simplify(index, pos, 3, targetIndexCount, 1.0, ['LockBorder']);
-  g.setIndex(new THREE.BufferAttribute(simplified, 1));
-  const out = compact(g);
+  welded.setIndex(new THREE.BufferAttribute(simplified, 1));
+  const out = compactPos(welded);
+
+  // 3) réprojection UV/couleurs depuis l'original
+  if (hasUV || hasColor) reproject(out, geometry);
   out.computeVertexNormals();
   return { geometry: out, tris: simplified.length / 3, error };
+}
+
+function reproject(out, srcGeom) {
+  if (!srcGeom.index) return; // reprojectAttrs a besoin d'un index sur la source
+  if (!srcGeom.boundsTree) srcGeom.boundsTree = new MeshBVH(srcGeom);
+  reprojectAttrs(out, srcGeom);
 }

@@ -26,7 +26,7 @@ function bary(P, A, B, C, out) {
 }
 
 // Réprojette UV et/ou couleurs de srcGeom (via son BVH) sur newGeom (par sommet).
-function reprojectAttrs(newGeom, srcGeom) {
+export function reprojectAttrs(newGeom, srcGeom) {
   const hasUV = !!srcGeom.attributes.uv, hasColor = !!srcGeom.attributes.color;
   if (!hasUV && !hasColor) return;
   const bvh = srcGeom.boundsTree; if (!bvh) return;
