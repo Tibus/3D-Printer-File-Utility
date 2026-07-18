@@ -451,21 +451,44 @@ function disposeAllObjects() {
   state.targetMesh = null;
 }
 
-function frameCamera(geometry) {
-  geometry.computeBoundingBox();
+// Cadre la caméra sur l'ensemble des objets de la scène.
+function frameAll() {
+  const box = new THREE.Box3();
+  let any = false;
+  for (const o of state.objects) {
+    o.updateMatrixWorld(true);
+    const b = new THREE.Box3().setFromObject(o);
+    if (!b.isEmpty()) { box.union(b); any = true; }
+  }
+  if (!any) return;
   const center = new THREE.Vector3();
-  geometry.boundingBox.getCenter(center);
+  box.getCenter(center);
   state.controls.target.copy(center);
   state.controls.update();
 }
 
-// Charge un nouveau modèle : remplace toute la scène.
+// Charge un modèle : l'AJOUTE à la scène (décalé à droite des objets existants pour
+// éviter le chevauchement, chaque objet étant recentré à l'origine au chargement).
 function installMesh(geometry, material) {
-  disposeAllObjects();
+  const existing = state.objects.slice();
   const mesh = createObject(geometry, material);
+  if (existing.length) {
+    let maxX = -Infinity;
+    for (const o of existing) { o.geometry.computeBoundingBox(); maxX = Math.max(maxX, o.position.x + o.geometry.boundingBox.max.x); }
+    mesh.geometry.computeBoundingBox();
+    mesh.position.x = maxX + 0.3 - mesh.geometry.boundingBox.min.x; // bord gauche à maxX + gap
+    mesh.updateMatrixWorld(true);
+  }
   setActiveObject(mesh);
-  frameCamera(mesh.geometry);
+  frameAll();
   _onObjectsChanged();
+}
+
+// Vide la scène (bouton "Nouvelle scène").
+export function newScene() {
+  disposeAllObjects();
+  _onObjectsChanged();
+  setStatus('Nouvelle scène — chargez un modèle pour commencer.');
 }
 
 // Réordonne les vertices par code de Morton (Z-order) pour que les vertices

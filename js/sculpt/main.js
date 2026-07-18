@@ -4,7 +4,7 @@ import * as THREE from 'three';
 import { state } from './state.js';
 import { initScene } from './scene.js';
 import {
-  loadModelFromFile, subdivideTarget, separateComponents,
+  loadModelFromFile, subdivideTarget, separateComponents, newScene,
   createObject, setActiveObject, setOnObjectsChanged,
   detachObject, attachObject, disposeObject,
 } from './loader.js';
@@ -356,6 +356,11 @@ document.getElementById('subdivide-btn').addEventListener('click', subdivideTarg
 document.getElementById('separate-btn').addEventListener('click', () => {
   if (isGizmoActive()) deactivateGizmo();
   separateComponents();
+  renderObjectList();
+});
+document.getElementById('new-scene-btn').addEventListener('click', () => {
+  if (isGizmoActive()) deactivateGizmo();
+  newScene();
   renderObjectList();
 });
 
