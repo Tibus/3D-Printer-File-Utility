@@ -141,7 +141,7 @@ function performSplit() {
       // Cap dégradé (repli, pas le CDT) : refuse la découpe pour ne PAS détruire le
       // maillage courant avec des "lignes verticales" ni cascader sur les re-coupes.
       if (res.capMode && res.capMode !== 'worker-cdt') {
-        setStatus('Découpe impossible ici (cap dégradé) — réessaie avec un tracé un peu différent ou un autre angle.');
+        setStatus('Découpe impossible ici : maillage trop peu dense sous le lasso (aucun sommet enclos). Clique « Subdiviser » puis réessaie, ou agrandis le tracé.');
         return;
       }
       // DoubleSide : l'orientation des parois n'est pas garantie.
