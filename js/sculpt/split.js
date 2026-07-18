@@ -325,13 +325,20 @@ function makeArcLength(lasso) {
 // leur (s = arc-length lasso, d = profondeur vue), et les boucles (listes d'ids).
 function buildCutLoops(partials, Marr, lasso, vw, vh, camPos, camFwd) {
   const idOf = new Map();          // edgeKey -> id
+  const posOf = new Map();         // hash position -> id (fusion des coïncidents)
   const posX = [], posY = [], posZ = [];
   const arc = makeArcLength(lasso);
   const e = Marr;
   const getId = (key, x, y, z) => {
     let id = idOf.get(key);
     if (id !== undefined) return id;
-    id = posX.length; idOf.set(key, id);
+    // Fusionne les croisements coïncidents (même position 3D mais arêtes de maillage
+    // différentes — ex. coupe passant par un sommet) : sinon ils restent des extrémités
+    // pendantes (deg1) qui cassent les boucles frontière.
+    const pk = Math.round(x * 1e4) + '_' + Math.round(y * 1e4) + '_' + Math.round(z * 1e4);
+    id = posOf.get(pk);
+    if (id !== undefined) { idOf.set(key, id); return id; }
+    id = posX.length; idOf.set(key, id); posOf.set(pk, id);
     posX.push(x); posY.push(y); posZ.push(z);
     return id;
   };
