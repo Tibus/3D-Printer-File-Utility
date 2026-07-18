@@ -16,7 +16,7 @@ import {
 import { lassoSplitAsync } from './split.js';
 import { pushGeom, pushAction, pushMask, undo, redo, setHistoryListener } from './history.js';
 import { initGizmo, activateGizmo, deactivateGizmo, setAltPivot, isGizmoActive } from './gizmo.js';
-import { ensureMask, invertMask, clearMask, setMaskBlur, rebuildMask, maskRecordBegin, maskRecordEnd } from './mask.js';
+import { ensureMask, invertMask, clearMask, setMaskBlur, rebuildMask, bakeMaskBlur, maskRecordBegin, maskRecordEnd } from './mask.js';
 import { exportGLB, exportOBJ } from './exporter.js';
 import { refreshWireframe, setStatus, showLoading, setProgress } from './ui.js';
 import { makeSquareAlpha, makeRoundAlpha, loadAlphaFromImage, renderAlphaPreview, makeFalloff, loadFalloffFromImage, renderFalloffPreview } from './alpha.js';
@@ -384,6 +384,22 @@ document.getElementById('mask-clear').addEventListener('click', () => {
     const v = parseInt(e.target.value, 10);
     val.textContent = v;
     if (state.targetMesh) { ensureMask(state.targetMesh.geometry, state.targetMesh.material); setMaskBlur(state.targetMesh.geometry, v); }
+  });
+  // Au relâchement : "cuit" le flou dans le masque net puis remet le slider à 0,
+  // pour que repeindre par-dessus ne réapplique pas de flou.
+  range.addEventListener('change', () => {
+    if (!state.targetMesh) return;
+    const g = state.targetMesh.geometry;
+    const oldSharp = Float32Array.from(g.userData.maskSharp || []);
+    const oldBlur = g.userData.maskBlur | 0;
+    if (!bakeMaskBlur(g)) return;             // rien à cuire (flou = 0)
+    rebuildMask(g);
+    range.value = 0; val.textContent = 0;
+    const newSharp = Float32Array.from(g.userData.maskSharp);
+    pushAction(
+      () => { g.userData.maskSharp.set(oldSharp); g.userData.maskBlur = oldBlur; rebuildMask(g); },
+      () => { g.userData.maskSharp.set(newSharp); g.userData.maskBlur = 0; rebuildMask(g); },
+    );
   });
 }
 });

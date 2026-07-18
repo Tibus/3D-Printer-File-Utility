@@ -81,6 +81,17 @@ export function setMaskBlur(geometry, iters) {
   rebuildMask(geometry);
 }
 
+// "Cuit" le flou courant dans le masque net : le résultat flouté (attribut 'mask')
+// devient le nouveau maskSharp, et le flou repart à 0. Ainsi repeindre par-dessus
+// ne réapplique pas de flou. Retourne true si un flou a effectivement été cuit.
+export function bakeMaskBlur(geometry) {
+  const ud = geometry.userData, attr = geometry.attributes.mask;
+  if (!ud || !ud.maskSharp || !attr || (ud.maskBlur | 0) <= 0) return false;
+  ud.maskSharp.set(attr.array);
+  ud.maskBlur = 0;
+  return true;
+}
+
 // ---------- Enregistrement undo (sommets de masque touchés) ----------
 let _recGeom = null, _recStamp = null, _recId = 0;
 const _recIdx = [], _recOld = [];
