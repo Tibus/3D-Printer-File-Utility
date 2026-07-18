@@ -138,6 +138,12 @@ function performSplit() {
   lassoSplitAsync(mesh.geometry, poly, state.camera, mesh.matrixWorld, rect.width, rect.height, state.params.cutDetail, setProgress)
     .then((res) => {
       if (!res) { setStatus('Le lasso n’a rien séparé.'); return; }
+      // Cap dégradé (repli, pas le CDT) : refuse la découpe pour ne PAS détruire le
+      // maillage courant avec des "lignes verticales" ni cascader sur les re-coupes.
+      if (res.capMode && res.capMode !== 'worker-cdt') {
+        setStatus('Découpe impossible ici (cap dégradé) — réessaie avec un tracé un peu différent ou un autre angle.');
+        return;
+      }
       // DoubleSide : l'orientation des parois n'est pas garantie.
       const matIn = mesh.material.clone(); matIn.side = THREE.DoubleSide;
       const matOut = mesh.material.clone(); matOut.side = THREE.DoubleSide;

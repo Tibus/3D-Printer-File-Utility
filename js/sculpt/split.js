@@ -621,8 +621,17 @@ export async function lassoSplitAsync(geometry, lassoPx, camera, matrixWorld, vw
   if (!wallFinal) {
     const cols = raycastColumns(geometry, lassoSmooth, U, vw, vh, camPos, camFwd);
     if (cols) wallFinal = buildWallPartial(cols, Math.max(1, detail | 0), hasUV, hasColor);
+    if (wallFinal && globalThis.__wallDebug) globalThis.__wallDebug.mode = 'raycast';
   }
   if (!wallFinal) return null;
+
+  // Qualité du cap : seul le CDT (worker-cdt) produit un cap propre/watertight. Les
+  // replis (sweep/raycast) donnent un cap dégradé ("lignes verticales") qui casse les
+  // re-découpes. On remonte le mode pour que l'appelant puisse refuser une découpe ratée.
+  const capMode = (globalThis.__wallDebug && globalThis.__wallDebug.mode) || 'unknown';
+  if (capMode !== 'worker-cdt') {
+    console.warn('[split] cap dégradé, mode=' + capMode + ' — retopo CDT indisponible', globalThis.__wallDebug);
+  }
 
   const inside0 = toGeometryMerged(partials.map((p) => p.A).concat([wallFinal]), hasNor, hasUV, hasColor);
   const outside0 = toGeometryMerged(partials.map((p) => p.B).concat([wallFinal]), hasNor, hasUV, hasColor);
@@ -636,5 +645,5 @@ export async function lassoSplitAsync(geometry, lassoPx, camera, matrixWorld, vw
   if (onProgress) onProgress(1);
 
   if (inside.index.count === 0 || outside.index.count === 0) return null;
-  return { inside, outside };
+  return { inside, outside, capMode };
 }
