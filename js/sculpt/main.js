@@ -19,6 +19,7 @@ import { lassoSplitManifold, warmupManifold } from './split-manifold.js';
 import { lassoSplitLocalized } from './split-local.js';
 import { voxelRemesh } from './remesh.js';
 import { booleanObjects } from './boolean.js';
+import { repairMesh } from './repair.js';
 import { pushGeom, pushAction, pushMask, undo, redo, setHistoryListener } from './history.js';
 import { initGizmo, activateGizmo, deactivateGizmo, setAltPivot, isGizmoActive } from './gizmo.js';
 import { ensureMask, invertMask, clearMask, setMaskBlur, rebuildMask, bakeMaskBlur, maskRecordBegin, maskRecordEnd } from './mask.js';
@@ -444,6 +445,24 @@ async function runBoolean(op) {
   } catch (err) { console.error(err); setStatus(`Booléen : ${err.message}`); }
   finally { const wait = Math.max(0, 250 - (performance.now() - startedAt)); setTimeout(() => showLoading(false), wait); }
 }
+document.getElementById('repair-btn').addEventListener('click', () => {
+  const mesh = state.targetMesh;
+  if (!mesh) { setStatus('Aucun objet à réparer.'); return; }
+  if (isGizmoActive()) deactivateGizmo();
+  try {
+    const { geometry, stats } = repairMesh(mesh.geometry);
+    const newMesh = createObject(geometry, mesh.material.clone(), mesh.name);
+    newMesh.position.copy(mesh.position); newMesh.updateMatrixWorld(true);
+    const old = mesh;
+    detachObject(old); setActiveObject(newMesh); renderObjectList();
+    setStatus(`Réparé — soudés ${stats.welded.toLocaleString()}, îlots retirés ${stats.removedIslands}, trous bouchés ${stats.filledHoles}`);
+    pushAction(
+      () => { detachObject(newMesh); attachObject(old); setActiveObject(old); renderObjectList(); },
+      () => { detachObject(old); attachObject(newMesh); setActiveObject(newMesh); renderObjectList(); },
+      () => { for (const m of [old, newMesh]) if (!state.objects.includes(m)) disposeObject(m); },
+    );
+  } catch (err) { console.error(err); setStatus(`Réparation : ${err.message}`); }
+});
 document.getElementById('bool-union').addEventListener('click', () => runBoolean('union'));
 document.getElementById('bool-subtract').addEventListener('click', () => runBoolean('subtract'));
 document.getElementById('bool-intersect').addEventListener('click', () => runBoolean('intersect'));
