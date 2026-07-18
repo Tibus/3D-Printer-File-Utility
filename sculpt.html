@@ -148,8 +148,8 @@
   <div class="param">
     <label>
       <span class="param-label">Mode coupe</span>
-      <select id="split-mode" title="Précise (CSG) : robuste mais lente. Rapide (CDT) : rapide, quelques soucis sur low-poly.">
-        <option value="csg" selected>Précise (CSG, lent)</option>
+      <select id="split-mode" title="Précise (booléen Manifold) : robuste + watertight. Rapide (CDT) : plus rapide mais quelques soucis sur low-poly.">
+        <option value="csg" selected>Précise (booléen)</option>
         <option value="fast">Rapide (CDT)</option>
       </select>
     </label>
@@ -201,7 +201,8 @@
       "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
       "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/",
       "three-mesh-bvh": "https://cdn.jsdelivr.net/npm/three-mesh-bvh@0.7.8/build/index.module.js",
-      "three-bvh-csg": "https://cdn.jsdelivr.net/npm/three-bvh-csg@0.0.17/build/index.module.js"
+      "three-bvh-csg": "https://cdn.jsdelivr.net/npm/three-bvh-csg@0.0.17/build/index.module.js",
+      "manifold-3d": "https://cdn.jsdelivr.net/npm/manifold-3d@3.5.1/manifold.js"
     }
   }
 </script>

@@ -15,6 +15,7 @@ import {
 } from './brush.js';
 import { lassoSplitAsync } from './split.js';
 import { lassoSplitCSG } from './split-csg.js';
+import { lassoSplitManifold, warmupManifold } from './split-manifold.js';
 import { pushGeom, pushAction, pushMask, undo, redo, setHistoryListener } from './history.js';
 import { initGizmo, activateGizmo, deactivateGizmo, setAltPivot, isGizmoActive } from './gizmo.js';
 import { ensureMask, invertMask, clearMask, setMaskBlur, rebuildMask, bakeMaskBlur, maskRecordBegin, maskRecordEnd } from './mask.js';
@@ -24,6 +25,7 @@ import { makeSquareAlpha, makeRoundAlpha, loadAlphaFromImage, renderAlphaPreview
 
 initScene();
 initGizmo();
+warmupManifold(); // précharge le WASM du booléen (mode de découpe par défaut)
 state.alpha = makeSquareAlpha(); // forme du brush (défaut : carré)
 state.falloff = makeFalloff(state.params.falloffHardness); // falloff radial
 
@@ -134,24 +136,28 @@ function performSplit() {
   mesh.updateMatrixWorld(true);
 
   const csg = state.params.splitMode === 'csg';
-  showLoading(true, csg ? 'Découpe (CSG, lent)…' : 'Découpe…');
+  const g = mesh.geometry, cam = state.camera, mw = mesh.matrixWorld, w = rect.width, h = rect.height, det = state.params.cutDetail;
+  showLoading(true, csg ? 'Découpe (booléen)…' : 'Découpe…');
   setProgress(csg ? null : 0);
-  // Mode CSG : booléen bloquant sur le thread principal -> setTimeout pour laisser
-  // le spinner s'afficher avant le calcul. Mode rapide : worker (CDT) + progression.
+  // Mode "précis" : Manifold (WASM, rapide + watertight) ; repli three-bvh-csg si le
+  // maillage n'est pas manifold. Mode rapide : worker (CDT) + progression.
   const run = csg
-    ? new Promise((resolve) => setTimeout(() => {
-      const r = lassoSplitCSG(mesh.geometry, poly, state.camera, mesh.matrixWorld, rect.width, rect.height, state.params.cutDetail);
-      if (r) r.capMode = 'csg';
-      resolve(r);
-    }, 40))
-    : lassoSplitAsync(mesh.geometry, poly, state.camera, mesh.matrixWorld, rect.width, rect.height, state.params.cutDetail, setProgress);
+    ? lassoSplitManifold(g, poly, cam, mw, w, h, det).then((r) => {
+      if (r && r.fallback) { // Manifold indispo/échec -> three-bvh-csg (bloquant)
+        const c = lassoSplitCSG(g, poly, cam, mw, w, h, det);
+        if (c) c.capMode = 'csg';
+        return c;
+      }
+      return r;
+    })
+    : lassoSplitAsync(g, poly, cam, mw, w, h, det, setProgress);
   run
     .then((res) => {
       if (!res) { setStatus('Le lasso n’a rien séparé.'); return; }
-      // Cap dégradé (repli fast, pas le CDT ni le CSG) : refuse la découpe pour ne PAS
-      // détruire le maillage courant avec des "lignes verticales" ni cascader.
-      if (res.capMode && res.capMode !== 'worker-cdt' && res.capMode !== 'csg') {
-        setStatus('Découpe impossible ici : maillage trop peu dense sous le lasso. Passe en mode « Précise (CSG) », clique « Subdiviser », ou agrandis le tracé.');
+      // Cap dégradé (repli fast uniquement) : refuse pour ne PAS détruire le maillage
+      // ni cascader. Les modes booléens (manifold/csg) sont toujours acceptés.
+      if (res.capMode && res.capMode !== 'worker-cdt' && res.capMode !== 'csg' && res.capMode !== 'manifold') {
+        setStatus('Découpe impossible ici : maillage trop peu dense sous le lasso. Passe en mode « Précise (booléen) », clique « Subdiviser », ou agrandis le tracé.');
         return;
       }
       // DoubleSide : l'orientation des parois n'est pas garantie.

@@ -134,13 +134,11 @@ function resampleLasso(pts, step) {
   return out;
 }
 
-export function lassoSplitCSG(geometry, lassoPx, camera, matrixWorld, vw, vh, detail = 6) {
-  if (lassoPx.length < 3) return null;
-  const hasUV = !!geometry.attributes.uv;
-  const hasColor = !!geometry.attributes.color;
+// Construit le prisme du lasso pour un objet donné : densifie le périmètre + concentre
+// les anneaux dans la tranche de profondeur de l'objet (croisillon sur les parois).
+// Partagé par les modes CSG et Manifold.
+export function buildLassoPrism(geometry, lassoPx, camera, matrixWorld, vw, vh, detail, hasUV, hasColor) {
   const d = Math.max(1, detail | 0);
-
-  // Tranche de profondeur (vue) occupée par l'objet -> on y concentre les anneaux.
   camera.updateMatrixWorld();
   const camPos = new THREE.Vector3(); camera.getWorldPosition(camPos);
   const camFwd = new THREE.Vector3(); camera.getWorldDirection(camFwd);
@@ -154,14 +152,19 @@ export function lassoSplitCSG(geometry, lassoPx, camera, matrixWorld, vw, vh, de
   }
   const margin = Math.max((dmax - dmin) * 0.04, 1e-3); // caps hors de l'objet
   const dRange = { dmin: dmin - margin, dmax: dmax + margin };
-
-  // périmètre dense + anneaux ~ detail -> grille (croisillon) sur les parois
   const step = Math.max(3, Math.min(vw, vh) / (d * 12));
   let lasso = resampleLasso(lassoPx, step);
   if (lasso.length > 600) lasso = resampleLasso(lassoPx, step * (lasso.length / 600)); // garde-fou perf
   const rings = Math.max(4, d);
+  return buildPrism(lasso, camera, vw, vh, hasUV, hasColor, rings, dRange);
+}
 
-  const prismGeo = buildPrism(lasso, camera, vw, vh, hasUV, hasColor, rings, dRange);
+export function lassoSplitCSG(geometry, lassoPx, camera, matrixWorld, vw, vh, detail = 6) {
+  if (lassoPx.length < 3) return null;
+  const hasUV = !!geometry.attributes.uv;
+  const hasColor = !!geometry.attributes.color;
+
+  const prismGeo = buildLassoPrism(geometry, lassoPx, camera, matrixWorld, vw, vh, detail, hasUV, hasColor);
 
   const attrs = ['position', 'normal'];
   if (hasUV) attrs.push('uv');
