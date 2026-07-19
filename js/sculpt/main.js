@@ -26,7 +26,7 @@ import { autoOrient } from './orient.js';
 import { decimateMesh } from './decimate.js';
 import { applyDisplayMode } from './display.js';
 import { saveScene, loadScene, clearScene } from './autosave.js';
-import { captureView, reprojectToUV, compositeLayers, applyTextureCanvas, hasPendingCam, captureSquareSidePx, paintMaskDab, readMaskCanvas, disposeLayerMask } from './retexture.js';
+import { captureView, reprojectToUV, compositeLayers, applyTextureCanvas, hasPendingCam, captureSquareSidePx, paintMaskDab, readMaskCanvas, disposeLayerMask, generateNanoBanana } from './retexture.js';
 import { splitByMask } from './split-mask.js';
 import { pushGeom, pushAction, pushMask, undo, redo, setHistoryListener } from './history.js';
 import { initGizmo, activateGizmo, deactivateGizmo, setAltPivot, isGizmoActive } from './gizmo.js';
@@ -715,6 +715,35 @@ function endRetexPaint(e) {
 dom.addEventListener('pointerup', endRetexPaint);
 dom.addEventListener('pointercancel', endRetexPaint);
 
+// Génération IA (Nano Banana / Gemini) — clé de l'utilisateur (BYOK, stockée en localStorage)
+{
+  const keyInput = document.getElementById('retex-apikey');
+  keyInput.value = localStorage.getItem('geminiApiKey') || '';
+  keyInput.addEventListener('change', () => localStorage.setItem('geminiApiKey', keyInput.value.trim()));
+}
+document.getElementById('retex-generate').addEventListener('click', async () => {
+  const mesh = state.targetMesh; if (!mesh) { setStatus('Aucun objet.'); return; }
+  const key = document.getElementById('retex-apikey').value.trim();
+  if (!key) { setStatus('Renseigne ta clé API Gemini (voir « Comment créer une clé »).'); return; }
+  const prompt = document.getElementById('retex-prompt').value.trim();
+  if (!prompt) { setStatus('Écris un prompt.'); return; }
+  localStorage.setItem('geminiApiKey', key);
+  showLoading(true, 'Génération Nano Banana…');
+  await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+  try {
+    const capUrl = captureView(); // capture 1:1 flat (albédo) + mémorise la caméra
+    const outUrl = await generateNanoBanana(capUrl, prompt, key); // image éditée (dataURL)
+    const img = await new Promise((res, rej) => { const im = new Image(); im.onload = () => res(im); im.onerror = () => rej(new Error('image renvoyée illisible')); im.src = outUrl; });
+    const layers = retexLayersOf(mesh);
+    const canvas = reprojectToUV(img, mesh, RETEX_SIZE);
+    const newLayer = { name: 'IA: ' + prompt.slice(0, 14), canvas, opacity: 1, visible: true };
+    if (_retexPendingMask && _retexPendingMask.mask) { newLayer.mask = _retexPendingMask.mask; newLayer._maskRT = _retexPendingMask._maskRT; _retexPendingMask = null; _retexMaskMode = 'layer'; _retexSelLayer = newLayer; }
+    layers.push(newLayer);
+    recomposeRetex(); renderRetexLayers();
+    setStatus('Calque IA généré et reprojeté.');
+  } catch (err) { console.error(err); setStatus(`Nano Banana : ${err.message}`); }
+  finally { showLoading(false); }
+});
 document.getElementById('retex-pregen').addEventListener('click', () => {
   if (_retexMaskMode === 'pregen') { _retexMaskMode = 'layer'; setStatus('Mode masque de calque.'); }
   else { _retexMaskMode = 'pregen'; _retexSelLayer = null; setStatus('Masque pré-génération — peins la zone (surbrillance). Elle deviendra le masque du prochain calque importé.'); }

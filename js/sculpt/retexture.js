@@ -337,6 +337,36 @@ export function readMaskCanvas(layer, texSize = 2048) {
 
 export function disposeLayerMask(layer) { if (layer._maskRT) { layer._maskRT.dispose(); layer._maskRT = null; } layer.mask = null; }
 
+// ---------- Nano Banana (Gemini 2.5 Flash Image) : édition d'image par prompt ----------
+// BYOK : la clé est celle de l'utilisateur (jamais stockée côté serveur). Appel direct
+// à l'API Gemini depuis le navigateur (CORS OK). Renvoie un dataURL de l'image éditée.
+const NANO_MODEL = 'gemini-2.5-flash-image';
+// Prompt SYSTÈME (dans le code) : cadre la tâche pour que la sortie reste reprojetable.
+const NANO_SYSTEM = [
+  'You edit the surface appearance (texture/material/color) of a 3D model shown in a flat, unlit screenshot.',
+  'CRITICAL: keep the EXACT same silhouette, geometry, pose, camera framing and composition as the input image — do not move, rotate, rescale, crop or reframe anything. The output must align pixel-for-pixel with the input so it can be reprojected onto the model.',
+  'Only change the appearance as requested. Keep it flat/even lighting, no added shadows, highlights or background.',
+  'Return a single edited image, same resolution and framing as the input.',
+].join(' ');
+export async function generateNanoBanana(imageDataURL, prompt, apiKey, model = NANO_MODEL) {
+  const b64 = imageDataURL.split(',')[1];
+  const mime = (imageDataURL.match(/^data:([^;]+);/) || [, 'image/png'])[1];
+  const body = {
+    systemInstruction: { parts: [{ text: NANO_SYSTEM }] },
+    contents: [{ parts: [{ text: prompt }, { inline_data: { mime_type: mime, data: b64 } }] }],
+  };
+  const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  });
+  if (!res.ok) { const t = await res.text().catch(() => ''); throw new Error(`API ${res.status} ${t.slice(0, 300)}`); }
+  const data = await res.json();
+  const parts = (data.candidates && data.candidates[0] && data.candidates[0].content && data.candidates[0].content.parts) || [];
+  const p = parts.find((x) => x.inlineData || x.inline_data);
+  if (!p) { const txt = parts.map((x) => x.text).filter(Boolean).join(' '); throw new Error('Pas d’image renvoyée' + (txt ? ` (${txt.slice(0, 200)})` : '')); }
+  const inl = p.inlineData || p.inline_data;
+  return `data:${inl.mimeType || inl.mime_type || 'image/png'};base64,${inl.data}`;
+}
+
 // Applique un canvas comme map de couleur de l'objet (baseMat + affichage dérivé).
 export function applyTextureCanvas(mesh, canvas) {
   const tex = new THREE.CanvasTexture(canvas);
