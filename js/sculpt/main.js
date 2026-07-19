@@ -243,11 +243,42 @@ function renderObjectList() {
       ev.stopPropagation();
       m.visible = !m.visible;
       if (!m.visible && state.targetMesh === m) {
-        const n = state.objects.find((o) => o.visible);
-        if (n) setActiveObject(n);
+        // l'objet actif ne doit jamais rester caché : bascule vers un visible, ou aucun.
+        const n = state.objects.find((o) => o.visible) || null;
+        setActiveObject(n);
         if (isGizmoActive()) { if (n) activateGizmo(n); else deactivateGizmo(); }
       }
       renderObjectList();
+    });
+
+    const dup = document.createElement('button');
+    dup.className = 'obj-btn';
+    dup.textContent = '⧉';
+    dup.title = 'Dupliquer';
+    dup.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      if (isGizmoActive()) deactivateGizmo();
+      const g = m.geometry.clone();
+      if (g.boundsTree) delete g.boundsTree;
+      const copy = createObject(g, baseMatOf(m).clone(), `${m.name} (copie)`, false); // déjà ordonné
+      copy.quaternion.copy(m.quaternion); copy.scale.copy(m.scale);
+      g.computeBoundingBox();
+      const w = (g.boundingBox.max.x - g.boundingBox.min.x) || 0.5;
+      copy.position.copy(m.position); copy.position.x += w * 1.05 + 0.1; // à côté de l'original
+      copy.updateMatrixWorld(true);
+      const msk = m.geometry.userData.maskSharp;
+      if (msk) {
+        ensureMask(copy.geometry, copy.userData.baseMat);
+        copy.geometry.userData.maskSharp.set(msk);
+        copy.geometry.userData.maskBlur = m.geometry.userData.maskBlur | 0;
+        copy.geometry.attributes.mask.array.set(msk); copy.geometry.attributes.mask.needsUpdate = true;
+      }
+      setActiveObject(copy); renderObjectList();
+      pushAction(
+        () => { detachObject(copy); setActiveObject(m); renderObjectList(); },
+        () => { attachObject(copy); setActiveObject(copy); renderObjectList(); },
+        () => { if (!state.objects.includes(copy)) disposeObject(copy); },
+      );
     });
 
     const del = document.createElement('button');
@@ -266,7 +297,7 @@ function renderObjectList() {
       );
     });
 
-    row.append(name, eye, del);
+    row.append(name, eye, dup, del);
     list.appendChild(row);
   });
   refreshBoolTargets();
@@ -347,7 +378,7 @@ restoreAutosave();
 // ---------- Événements pointeur ----------
 
 dom.addEventListener('pointerdown', (e) => {
-  if (e.button !== 0 || !state.targetMesh) return;
+  if (e.button !== 0 || !state.targetMesh || !state.targetMesh.visible) return;
   if (radiusMode) return; // réglage du rayon en cours (X maintenu)
   if (state.params.tool === 'gizmo') return; // TransformControls gère ses propres events
   if (state.params.tool === 'split') { startLasso(e); return; }
