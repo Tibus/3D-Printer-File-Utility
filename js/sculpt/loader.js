@@ -295,8 +295,9 @@ export function setOnObjectsChanged(fn) { _onObjectsChanged = fn; }
 
 // Crée un objet sculptable depuis une géométrie (reorder + BVH + wireframe) et
 // l'ajoute à la scène et à state.objects. Ne le rend pas actif.
-export function createObject(geometry, material, label) {
-  reorderSpatially(geometry); // locality mémoire -> upload GPU partiel efficace
+export function createObject(geometry, material, label, reorder = true) {
+  if (reorder) reorderSpatially(geometry); // locality mémoire -> upload GPU partiel efficace
+  // (restauration autosave : géométrie déjà ordonnée + masque aligné -> ne PAS réordonner)
   geometry.computeBoundsTree({ setBoundingBox: false });
 
   const mesh = new THREE.Mesh(geometry, material);

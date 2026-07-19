@@ -25,6 +25,7 @@ import { checkThickness } from './wallcheck.js';
 import { autoOrient } from './orient.js';
 import { decimateMesh } from './decimate.js';
 import { applyDisplayMode } from './display.js';
+import { saveScene, loadScene, clearScene } from './autosave.js';
 import { pushGeom, pushAction, pushMask, undo, redo, setHistoryListener } from './history.js';
 import { initGizmo, activateGizmo, deactivateGizmo, setAltPivot, isGizmoActive } from './gizmo.js';
 import { ensureMask, invertMask, clearMask, setMaskBlur, rebuildMask, bakeMaskBlur, maskRecordBegin, maskRecordEnd } from './mask.js';
@@ -272,9 +273,57 @@ function refreshBoolTargets() {
   if (prev && [...sel.options].some((o) => o.value === prev)) sel.value = prev;
 }
 
-setOnObjectsChanged(renderObjectList);
+// ---------- Autosave (IndexedDB) : restaure la scène au rechargement ----------
+let _saveTimer = null, _restoring = false;
+function autosaveMeta() {
+  return { now: Date.now(), cam: state.camera.position.toArray(), target: state.controls.target.toArray(), displayMode: state.params.displayMode };
+}
+function markDirty() {
+  if (_restoring) return; // pas de save pendant la restauration
+  clearTimeout(_saveTimer);
+  _saveTimer = setTimeout(() => { saveScene(state.objects, autosaveMeta()).catch((e) => console.warn('[autosave]', e)); }, 2500);
+}
+function flushSave() {
+  if (_restoring) return;
+  clearTimeout(_saveTimer);
+  saveScene(state.objects, autosaveMeta()).catch(() => {});
+}
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') flushSave(); });
+window.addEventListener('pagehide', flushSave);
+
+async function restoreAutosave() {
+  let data;
+  try { data = await loadScene(); } catch (e) { console.warn('[autosave] load', e); return; }
+  if (!data || !data.objects.length) return;
+  _restoring = true;
+  try {
+    for (const o of data.objects) {
+      const mesh = createObject(o.geometry, o.material, o.name, false); // géométrie déjà ordonnée
+      mesh.position.fromArray(o.pos); mesh.quaternion.fromArray(o.quat); mesh.scale.fromArray(o.scale); mesh.updateMatrixWorld(true);
+      mesh.visible = o.visible;
+      if (o.mask && o.mask.sharp) {
+        ensureMask(mesh.geometry, mesh.userData.baseMat);
+        mesh.geometry.userData.maskSharp.set(o.mask.sharp);
+        mesh.geometry.userData.maskBlur = o.mask.blur | 0;
+        mesh.geometry.attributes.mask.array.set(o.mask.sharp);
+        mesh.geometry.attributes.mask.needsUpdate = true;
+      }
+    }
+    setActiveObject(state.objects.find((m) => m.visible) || state.objects[0]);
+    if (data.meta.displayMode) { state.params.displayMode = data.meta.displayMode; const sel = document.getElementById('display-mode'); if (sel) sel.value = data.meta.displayMode; applyDisplayMode(state.objects, data.meta.displayMode); }
+    if (data.meta.cam) state.camera.position.fromArray(data.meta.cam);
+    if (data.meta.target) { state.controls.target.fromArray(data.meta.target); }
+    state.controls.update();
+    renderObjectList();
+    setStatus(`Scène restaurée — ${state.objects.length} objet(s). « Nouvelle scène » pour repartir de zéro.`);
+  } catch (e) { console.warn('[autosave] restore', e); }
+  finally { _restoring = false; }
+}
+
+setOnObjectsChanged(() => { renderObjectList(); markDirty(); });
 renderObjectList();
 window.__objects = state.objects; // debug (comme window.__perf)
+restoreAutosave();
 
 // ---------- Événements pointeur ----------
 
@@ -395,6 +444,7 @@ document.getElementById('new-scene-btn').addEventListener('click', () => {
   if (isGizmoActive()) deactivateGizmo();
   newScene();
   renderObjectList();
+  clearScene(); // efface aussi l'autosave
 });
 {
   const range = document.getElementById('remesh-range'), val = document.getElementById('remesh-val');
@@ -610,7 +660,7 @@ const undoBtn = document.getElementById('undo-btn');
 const redoBtn = document.getElementById('redo-btn');
 undoBtn.addEventListener('click', undo);
 redoBtn.addEventListener('click', redo);
-setHistoryListener((cu, cr) => { undoBtn.disabled = !cu; redoBtn.disabled = !cr; });
+setHistoryListener((cu, cr) => { undoBtn.disabled = !cu; redoBtn.disabled = !cr; markDirty(); });
 
 // ---------- UI : outils ----------
 
