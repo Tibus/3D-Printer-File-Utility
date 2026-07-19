@@ -44,6 +44,14 @@ export function fillLoopsCDT(geometry, detail = 10) {
   geometry.computeBoundingBox();
   const bc = new THREE.Vector3(); geometry.boundingBox.getCenter(bc);
 
+  // Éventail 3D vers le centroïde : O(n), toujours étanche, gère les bords non plans
+  // (là où le CDT planaire s'effondre). Attributs internes = moyenne du contour.
+  const fanLoop = (loop, n, cx, cy, cz, outward) => {
+    const cv = V++;
+    for (const a of attrs) { if (a === 'position') out.position.push(cx, cy, cz); else { const d = DIM[a]; for (let c = 0; c < d; c++) { let s = 0; for (const v of loop) s += src[a][v * d + c]; out[a].push(s / n); } } }
+    for (let i = 0; i < n; i++) { const a = loop[i], b = loop[(i + 1) % n]; if (outward) outIdx.push(b, a, cv); else outIdx.push(a, b, cv); }
+  };
+
   for (const loop of loops) {
     const n = loop.length;
     // centroïde + normale de Newell
@@ -62,6 +70,16 @@ export function fillLoopsCDT(geometry, detail = 10) {
     for (let i = 0; i < n; i++) { if (px[i] < x0) x0 = px[i]; if (px[i] > x1) x1 = px[i]; if (py[i] < y0) y0 = py[i]; if (py[i] > y1) y1 = py[i]; }
     const inPoly = (qx, qy) => { let ins = false; for (let i = 0, j = n - 1; i < n; j = i++) { const xi = px[i], yi = py[i], xj = px[j], yj = py[j]; if (((yi > qy) !== (yj > qy)) && (qx < ((xj - xi) * (qy - yi)) / (yj - yi) + xi)) ins = !ins; } return ins; };
 
+    // orientation : normale du cap doit pointer vers l'extérieur (loin du centre global)
+    const outward = ((cx - bc.x) * nx + (cy - bc.y) * ny + (cz - bc.z) * nz) >= 0;
+    // Planarité : le CDT planaire est lent et produit un cap en miettes quand le bord n'est
+    // pas ~plan (ex. coupe courbe d'un masque sur une sphère -> polygone 2D auto-intersectant).
+    // Dans ce cas (ou boucle très longue) -> éventail 3D rapide et robuste.
+    let maxDev = 0;
+    for (const v of loop) { const dx = pos[v * 3] - cx, dy = pos[v * 3 + 1] - cy, dz = pos[v * 3 + 2] - cz; const d = Math.abs(dx * nx + dy * ny + dz * nz); if (d > maxDev) maxDev = d; }
+    const extent = Math.max(x1 - x0, y1 - y0) || 1;
+    if (maxDev > 0.18 * extent || n > 300) { fanLoop(loop, n, cx, cy, cz, outward); continue; }
+
     const localGlobal = loop.slice(); // local < n -> global existant ; interne -> nouveau
     const step = (Math.max(x1 - x0, y1 - y0) || 1) / Math.max(2, detail | 0);
     for (let gy = y0 + step * 0.5; gy < y1; gy += step) for (let gx = x0 + step * 0.5; gx < x1; gx += step) {
@@ -74,9 +92,6 @@ export function fillLoopsCDT(geometry, detail = 10) {
       }
       localGlobal.push(V++);
     }
-
-    // orientation : normale du cap doit pointer vers l'extérieur (loin du centre global)
-    const outward = ((cx - bc.x) * nx + (cy - bc.y) * ny + (cz - bc.z) * nz) >= 0;
 
     const np = px.length; const DX = new Float64Array(px), DY = new Float64Array(py);
     let tris;
@@ -118,10 +133,7 @@ export function fillLoopsCDT(geometry, detail = 10) {
         if (outward) outIdx.push(gq, gp, cvIdx); else outIdx.push(gp, gq, cvIdx);
       }
     } else {
-      // repli éventail vers le centroïde
-      const cv = V++;
-      for (const a of attrs) { if (a === 'position') out.position.push(cx, cy, cz); else { const d = DIM[a]; for (let c = 0; c < d; c++) { let s = 0; for (const v of loop) s += src[a][v * d + c]; out[a].push(s / n); } } }
-      for (let i = 0; i < n; i++) { const a = loop[i], b = loop[(i + 1) % n]; if (outward) outIdx.push(b, a, cv); else outIdx.push(a, b, cv); }
+      fanLoop(loop, n, cx, cy, cz, outward); // repli si le CDT a levé une exception
     }
   }
 
