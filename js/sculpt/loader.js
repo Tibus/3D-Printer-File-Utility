@@ -16,6 +16,7 @@ import { FBXLoader } from 'three/addons/loaders/FBXLoader.js';
 import { mergeGeometries, mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 import { computeBoundsTree, disposeBoundsTree, acceleratedRaycast } from 'three-mesh-bvh';
 import { pushAction, clearHistory } from './history.js';
+import { displayMaterial } from './display.js';
 import { state } from './state.js';
 import { setStatus, showLoading, refreshWireframe } from './ui.js';
 
@@ -301,6 +302,8 @@ export function createObject(geometry, material, label) {
   const mesh = new THREE.Mesh(geometry, material);
   mesh.frustumCulled = false;
   mesh.name = label || `Objet ${++state.objectSeq}`;
+  mesh.userData.baseMat = material; // matériau réel ; l'affichage courant en dérive
+  mesh.material = displayMaterial(material, state.params.displayMode || 'texture');
 
   const wire = new THREE.Mesh(
     geometry,
@@ -406,7 +409,7 @@ export function separateComponents() {
   };
   for (let t = 0; t < idx.length; t += 3) { const ci = triComp[t / 3], b = builders[ci]; b.idx.push(vmap(ci, b, idx[t]), vmap(ci, b, idx[t + 1]), vmap(ci, b, idx[t + 2])); }
 
-  const mat = src.material;
+  const mat = src.userData.baseMat || src.material;
   const created = builders.map((b, i) => {
     const g = new THREE.BufferGeometry();
     g.setAttribute('position', new THREE.Float32BufferAttribute(b.pos, 3));
@@ -640,7 +643,7 @@ export function subdivideTarget() {
     return;
   }
 
-  const sourceMat = state.targetMesh.material;
+  const sourceMat = state.targetMesh.userData.baseMat || state.targetMesh.material;
   showLoading(true);
   requestAnimationFrame(() => requestAnimationFrame(() => {
     const pos = geometry.attributes.position;

@@ -21,7 +21,7 @@ function buildExportMesh() {
   const src = state.targetMesh;
   const geom = src.geometry.clone();
   if (geom.boundsTree) delete geom.boundsTree;
-  return new THREE.Mesh(geom, src.material.clone());
+  return new THREE.Mesh(geom, (src.userData.baseMat || src.material).clone());
 }
 
 export function exportGLB() {

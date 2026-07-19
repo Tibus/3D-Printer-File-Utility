@@ -24,12 +24,16 @@ import { hollowMesh } from './hollow.js';
 import { checkThickness } from './wallcheck.js';
 import { autoOrient } from './orient.js';
 import { decimateMesh } from './decimate.js';
+import { applyDisplayMode } from './display.js';
 import { pushGeom, pushAction, pushMask, undo, redo, setHistoryListener } from './history.js';
 import { initGizmo, activateGizmo, deactivateGizmo, setAltPivot, isGizmoActive } from './gizmo.js';
 import { ensureMask, invertMask, clearMask, setMaskBlur, rebuildMask, bakeMaskBlur, maskRecordBegin, maskRecordEnd } from './mask.js';
 import { exportGLB, exportOBJ } from './exporter.js';
 import { refreshWireframe, setStatus, showLoading, setProgress } from './ui.js';
 import { makeSquareAlpha, makeRoundAlpha, loadAlphaFromImage, renderAlphaPreview, makeFalloff, loadFalloffFromImage, renderFalloffPreview } from './alpha.js';
+
+// Matériau RÉEL d'un objet (indépendant du mode d'affichage matcap/uni).
+const baseMatOf = (m) => m.userData.baseMat || m.material;
 
 initScene();
 initGizmo();
@@ -170,8 +174,8 @@ function performSplit() {
         return;
       }
       // DoubleSide : l'orientation des parois n'est pas garantie.
-      const matIn = mesh.material.clone(); matIn.side = THREE.DoubleSide;
-      const matOut = mesh.material.clone(); matOut.side = THREE.DoubleSide;
+      const matIn = baseMatOf(mesh).clone(); matIn.side = THREE.DoubleSide;
+      const matOut = baseMatOf(mesh).clone(); matOut.side = THREE.DoubleSide;
       const inMesh = createObject(res.inside, matIn);
       const outMesh = createObject(res.outside, matOut);
       detachObject(mesh); // garde l'original pour l'undo (pas de dispose)
@@ -397,6 +401,13 @@ document.getElementById('new-scene-btn').addEventListener('click', () => {
   range.value = state.params.remeshRes; val.textContent = state.params.remeshRes;
   range.addEventListener('input', (e) => { state.params.remeshRes = parseInt(e.target.value, 10); val.textContent = state.params.remeshRes; });
 }
+{
+  const sel = document.getElementById('display-mode');
+  if (sel) {
+    sel.value = state.params.displayMode;
+    sel.addEventListener('change', (e) => { state.params.displayMode = e.target.value; applyDisplayMode(state.objects, e.target.value); });
+  }
+}
 document.getElementById('remesh-btn').addEventListener('click', async () => {
   const mesh = state.targetMesh;
   if (!mesh) { setStatus('Aucun objet à remailler.'); return; }
@@ -407,7 +418,7 @@ document.getElementById('remesh-btn').addEventListener('click', async () => {
   try {
     const geom = await voxelRemesh(mesh.geometry, state.params.remeshRes);
     if (!geom || geom.index.count === 0) { setStatus('Remesh échoué (rien produit).'); return; }
-    const newMesh = createObject(geom, mesh.material.clone(), mesh.name);
+    const newMesh = createObject(geom, baseMatOf(mesh).clone(), mesh.name);
     newMesh.position.copy(mesh.position); newMesh.updateMatrixWorld(true);
     const old = mesh;
     detachObject(old); setActiveObject(newMesh); renderObjectList();
@@ -437,7 +448,7 @@ async function runBoolean(op) {
       setStatus(res && res.fallback ? 'Booléen impossible (maillage non-manifold — fais un « Voxel remesh » d’abord).' : 'Booléen : rien produit.');
       return;
     }
-    const newMesh = createObject(res.geometry, A.material.clone(), `${A.name} ⊕`); // géométrie déjà en monde
+    const newMesh = createObject(res.geometry, baseMatOf(A).clone(), `${A.name} ⊕`); // géométrie déjà en monde
     const a = A, b = B;
     detachObject(a); detachObject(b); setActiveObject(newMesh); renderObjectList();
     setStatus('Booléen effectué.');
@@ -479,7 +490,7 @@ document.getElementById('decimate-btn').addEventListener('click', async () => {
   try {
     const { geometry } = await decimateMesh(mesh.geometry, state.params.decimateRatio);
     if (!geometry || geometry.index.count === 0) { setStatus('Décimation échouée.'); return; }
-    const newMesh = createObject(geometry, mesh.material.clone(), mesh.name);
+    const newMesh = createObject(geometry, baseMatOf(mesh).clone(), mesh.name);
     newMesh.position.copy(mesh.position); newMesh.updateMatrixWorld(true);
     const old = mesh;
     detachObject(old); setActiveObject(newMesh); renderObjectList();
@@ -503,7 +514,7 @@ document.getElementById('orient-btn').addEventListener('click', async () => {
   try {
     const geom = await Promise.resolve().then(() => autoOrient(mesh.geometry));
     if (!geom) { setStatus('Auto-orientation impossible.'); return; }
-    const newMesh = createObject(geom, mesh.material.clone(), mesh.name);
+    const newMesh = createObject(geom, baseMatOf(mesh).clone(), mesh.name);
     newMesh.position.copy(mesh.position); newMesh.updateMatrixWorld(true);
     const old = mesh;
     detachObject(old); setActiveObject(newMesh); renderObjectList();
@@ -559,7 +570,7 @@ document.getElementById('hollow-btn').addEventListener('click', async () => {
     const out = await hollowMesh(mesh.geometry, frac, res);
     if (out && out.tooThick) { setStatus('Épaisseur trop grande : pas d’intérieur. Réduis l’épaisseur.'); return; }
     if (!out || !out.geometry || out.geometry.index.count === 0) { setStatus('Évidement échoué.'); return; }
-    const newMesh = createObject(out.geometry, mesh.material.clone(), mesh.name);
+    const newMesh = createObject(out.geometry, baseMatOf(mesh).clone(), mesh.name);
     newMesh.position.copy(mesh.position); newMesh.updateMatrixWorld(true);
     const old = mesh;
     detachObject(old); setActiveObject(newMesh); renderObjectList();
@@ -578,7 +589,7 @@ document.getElementById('repair-btn').addEventListener('click', () => {
   if (isGizmoActive()) deactivateGizmo();
   try {
     const { geometry, stats } = repairMesh(mesh.geometry);
-    const newMesh = createObject(geometry, mesh.material.clone(), mesh.name);
+    const newMesh = createObject(geometry, baseMatOf(mesh).clone(), mesh.name);
     newMesh.position.copy(mesh.position); newMesh.updateMatrixWorld(true);
     const old = mesh;
     detachObject(old); setActiveObject(newMesh); renderObjectList();
