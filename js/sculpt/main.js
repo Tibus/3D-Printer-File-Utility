@@ -233,7 +233,8 @@ function renderObjectList() {
 
     const name = document.createElement('span');
     name.className = 'obj-name';
-    name.textContent = m.name;
+    const tri = m.geometry.index ? m.geometry.index.count / 3 : m.geometry.attributes.position.count / 3;
+    name.textContent = `${m.name} (${tri.toLocaleString('fr-FR')} tri)`;
     name.addEventListener('click', () => { if (m.visible) { setActiveObject(m); if (isGizmoActive()) activateGizmo(m); renderObjectList(); } });
 
     const eye = document.createElement('button');
@@ -346,6 +347,7 @@ async function restoreAutosave() {
   let data;
   try { data = await loadScene(); } catch (e) { console.warn('[autosave] load', e); return; }
   if (!data || !data.objects.length) return;
+  if (state.objects.length) return; // ne JAMAIS empiler la restauration sur une scène déjà peuplée (évite les doublons)
   _restoring = true;
   try {
     for (const o of data.objects) {
@@ -768,8 +770,12 @@ document.getElementById('mask-split').addEventListener('click', () => {
     try {
       const res = splitByMask(mesh.geometry, maskSrc, 0.5, state.params.cutDetail);
       if (!res) { setStatus('Rien à séparer (masque vide, total, ou sans frontière nette).'); return; }
-      const inMesh = createObject(res.inside, baseMatOf(mesh).clone());
-      const outMesh = createObject(res.outside, baseMatOf(mesh).clone());
+      // DoubleSide : l'orientation des parois/caps n'est pas garantie (évite les faces noires
+      // et les normales à l'envers sur les caps après recalcul).
+      const matIn = baseMatOf(mesh).clone(); matIn.side = THREE.DoubleSide;
+      const matOut = baseMatOf(mesh).clone(); matOut.side = THREE.DoubleSide;
+      const inMesh = createObject(res.inside, matIn, `${mesh.name} (masqué)`);
+      const outMesh = createObject(res.outside, matOut, `${mesh.name} (reste)`);
       inMesh.position.copy(mesh.position); inMesh.quaternion.copy(mesh.quaternion); inMesh.scale.copy(mesh.scale); inMesh.updateMatrixWorld(true);
       outMesh.position.copy(mesh.position); outMesh.quaternion.copy(mesh.quaternion); outMesh.scale.copy(mesh.scale); outMesh.updateMatrixWorld(true);
       detachObject(mesh); setActiveObject(outMesh); renderObjectList();

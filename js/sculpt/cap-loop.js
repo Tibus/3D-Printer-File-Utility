@@ -38,7 +38,9 @@ export function fillLoopsCDT(geometry, detail = 10) {
   const out = {}; for (const a of attrs) out[a] = Array.from(src[a]);
   const outIdx = Array.from(idx0);
   const pos = src.position;
-  let V = geometry.attributes.position.count;
+  const V0 = geometry.attributes.position.count; // sommets d'origine (corps) : indices [0, V0)
+  const srcNormal = geometry.attributes.normal ? geometry.attributes.normal.array : null;
+  let V = V0;
 
   // centre global (pour orienter les caps vers l'extérieur)
   geometry.computeBoundingBox();
@@ -164,6 +166,10 @@ export function fillLoopsCDT(geometry, detail = 10) {
   for (const a of attrs) g.setAttribute(a, new THREE.Float32BufferAttribute(out[a], DIM[a]));
   g.setIndex(outIdx);
   g.computeVertexNormals();
+  // Les sommets du bord (partagés corps/cap) sont dans [0, V0) : computeVertexNormals y
+  // moyenne faces du corps + faces de la cap -> normales « biseau » bizarres au bord. On
+  // restaure les normales d'origine du corps (les nouveaux sommets de cap gardent le recalcul).
+  if (srcNormal) { const na = g.attributes.normal.array; const n0 = Math.min(srcNormal.length, V0 * 3); for (let i = 0; i < n0; i++) na[i] = srcNormal[i]; g.attributes.normal.needsUpdate = true; }
   g.userData._filledHoles = loops.length;
   return g;
 }
