@@ -737,6 +737,7 @@ toolButtons.forEach((btn) => {
       document.getElementById('maskblur-val').textContent = b;
     }
   });
+}); // <- fin du toolButtons.forEach (sinon les listeners ci-dessous seraient liés 1×/bouton)
 
 // Panneau masque : inverser / effacer / flou
 document.getElementById('mask-invert').addEventListener('click', () => {
@@ -815,7 +816,6 @@ document.getElementById('mask-split').addEventListener('click', () => {
     );
   });
 }
-});
 
 // ---------- UI : sliders ----------
 
