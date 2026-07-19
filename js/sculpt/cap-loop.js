@@ -44,12 +44,35 @@ export function fillLoopsCDT(geometry, detail = 10) {
   geometry.computeBoundingBox();
   const bc = new THREE.Vector3(); geometry.boundingBox.getCenter(bc);
 
-  // Éventail 3D vers le centroïde : O(n), toujours étanche, gère les bords non plans
-  // (là où le CDT planaire s'effondre). Attributs internes = moyenne du contour.
+  // Nombre d'anneaux radiaux du cap éventail (densité SCULPTABLE réglée par detail).
+  const capRings = Math.max(1, Math.min(20, Math.round(detail / 2)));
+
+  // Éventail 3D CONCENTRIQUE vers le centroïde : anneaux internes interpolés en 3D entre
+  // le contour et le centre -> cap sculptable (grille radiale), O(n×rings), toujours
+  // étanche, et gère les bords non plans (là où le CDT planaire s'effondre).
   const fanLoop = (loop, n, cx, cy, cz, outward) => {
-    const cv = V++;
-    for (const a of attrs) { if (a === 'position') out.position.push(cx, cy, cz); else { const d = DIM[a]; for (let c = 0; c < d; c++) { let s = 0; for (const v of loop) s += src[a][v * d + c]; out[a].push(s / n); } } }
-    for (let i = 0; i < n; i++) { const a = loop[i], b = loop[(i + 1) % n]; if (outward) outIdx.push(b, a, cv); else outIdx.push(a, b, cv); }
+    // attributs du centroïde (moyenne du contour) ; position centroïde = (cx,cy,cz)
+    const cAttr = {}; for (const a of attrs) { const d = DIM[a]; const v = new Array(d).fill(0); for (const li of loop) for (let c = 0; c < d; c++) v[c] += src[a][li * d + c]; for (let c = 0; c < d; c++) v[c] /= n; cAttr[a] = v; }
+    if (cAttr.position) { cAttr.position[0] = cx; cAttr.position[1] = cy; cAttr.position[2] = cz; }
+    // rows[0] = contour (globals existants) ; rows[1..R-1] = anneaux internes ; rows[R] = centre
+    const rows = [loop.slice()];
+    for (let r = 1; r < capRings; r++) {
+      const t = r / capRings, row = [];
+      for (let i = 0; i < n; i++) {
+        const li = loop[i];
+        for (const a of attrs) { const d = DIM[a], s = src[a]; for (let c = 0; c < d; c++) out[a].push(s[li * d + c] * (1 - t) + cAttr[a][c] * t); }
+        row.push(V++);
+      }
+      rows.push(row);
+    }
+    const cv = V++; for (const a of attrs) { const d = DIM[a]; for (let c = 0; c < d; c++) out[a].push(cAttr[a][c]); }
+    rows.push(new Array(n).fill(cv)); // anneau central (sommet unique)
+    // couture anneau par anneau (quads -> 2 triangles), winding cohérent avec outward
+    const push3 = (A, B, C) => { if (A === B || B === C || A === C) return; if (outward) outIdx.push(A, B, C); else outIdx.push(A, C, B); };
+    for (let r = 0; r < capRings; r++) {
+      const outer = rows[r], inner = rows[r + 1];
+      for (let i = 0; i < n; i++) { const j = (i + 1) % n; push3(outer[j], outer[i], inner[i]); push3(outer[j], inner[i], inner[j]); }
+    }
   };
 
   for (const loop of loops) {
