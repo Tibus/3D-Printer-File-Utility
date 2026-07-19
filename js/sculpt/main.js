@@ -758,12 +758,15 @@ document.getElementById('mask-split').addEventListener('click', () => {
   if (!mesh) { setStatus('Aucun objet.'); return; }
   const maskAttr = mesh.geometry.attributes.mask;
   if (!maskAttr) { setStatus('Peins d’abord un masque.'); return; }
+  // On splitte sur le masque PEINT (maskSharp), pas sur le flouté : le curseur de flou
+  // n'influe donc plus sur la découpe (évite les mini-objets dus au dégradé du flou).
+  const maskSrc = mesh.geometry.userData.maskSharp || maskAttr.array;
   if (isGizmoActive()) deactivateGizmo();
   showLoading(true, 'Séparation du masque…');
   const startedAt = performance.now();
   requestAnimationFrame(() => requestAnimationFrame(() => {
     try {
-      const res = splitByMask(mesh.geometry, maskAttr.array, 0.5, state.params.cutDetail);
+      const res = splitByMask(mesh.geometry, maskSrc, 0.5, state.params.cutDetail);
       if (!res) { setStatus('Rien à séparer (masque vide, total, ou sans frontière nette).'); return; }
       const inMesh = createObject(res.inside, baseMatOf(mesh).clone());
       const outMesh = createObject(res.outside, baseMatOf(mesh).clone());

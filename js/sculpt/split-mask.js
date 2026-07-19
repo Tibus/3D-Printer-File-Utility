@@ -31,6 +31,34 @@ class Part {
   }
 }
 
+// Retire les composantes connexes dont le nb de triangles < frac × la plus grosse.
+// Élimine les mini-blobs parasites (sommets masqués isolés / mouchetures du masque) qui
+// deviendraient de « petits objets invisibles » après bouchage. Préserve tous les attributs.
+function keepLargeComponents(geo, frac) {
+  const idx = geo.index.array, V = geo.attributes.position.count, nTri = idx.length / 3;
+  const parent = new Uint32Array(V); for (let i = 0; i < V; i++) parent[i] = i;
+  const find = (x) => { while (parent[x] !== x) { parent[x] = parent[parent[x]]; x = parent[x]; } return x; };
+  const uni = (a, b) => { a = find(a); b = find(b); if (a !== b) parent[a] = b; };
+  for (let t = 0; t < nTri; t++) { uni(idx[t * 3], idx[t * 3 + 1]); uni(idx[t * 3 + 1], idx[t * 3 + 2]); }
+  const cnt = new Map(); for (let t = 0; t < nTri; t++) { const r = find(idx[t * 3]); cnt.set(r, (cnt.get(r) || 0) + 1); }
+  if (cnt.size <= 1) return geo;
+  let maxC = 0; for (const c of cnt.values()) if (c > maxC) maxC = c;
+  const minKeep = Math.max(4, maxC * frac);
+  const attrs = ATTRS.filter((a) => geo.attributes[a]);
+  const src = {}; for (const a of attrs) src[a] = geo.attributes[a].array;
+  const remap = new Map(); const out = {}; for (const a of attrs) out[a] = []; const outIdx = []; let kept = 0;
+  for (let t = 0; t < nTri; t++) {
+    if (cnt.get(find(idx[t * 3])) < minKeep) continue;
+    kept++;
+    for (let k = 0; k < 3; k++) { const v = idx[t * 3 + k]; let nv = remap.get(v); if (nv === undefined) { nv = remap.size; remap.set(v, nv); for (const a of attrs) { const d = DIM[a], s = src[a]; for (let c = 0; c < d; c++) out[a].push(s[v * d + c]); } } outIdx.push(nv); }
+  }
+  if (kept === nTri) return geo;
+  const ng = new THREE.BufferGeometry();
+  for (const a of attrs) ng.setAttribute(a, new THREE.Float32BufferAttribute(out[a], DIM[a]));
+  ng.setIndex(outIdx);
+  return ng;
+}
+
 // Retourne { inside, outside } (géométries fermées : masqué / non masqué) ou null si rien
 // à séparer (masque vide ou total).
 export function splitByMask(geometry, mask, threshold = 0.5, detail = 10) {
@@ -61,7 +89,8 @@ export function splitByMask(geometry, mask, threshold = 0.5, detail = 10) {
   }
   if (A.idx.length === 0 || B.idx.length === 0) return null; // rien à séparer
 
-  // bouche les caps par CDT + grille interne (sculptable), normales recalculées
-  const cap = (part) => fillLoopsCDT(part.geometry(), detail);
+  // nettoie les mini-composantes parasites PUIS bouche les caps (CDT/éventail), normales
+  // recalculées. Le nettoyage évite les « petits objets invisibles » dus au flou du masque.
+  const cap = (part) => fillLoopsCDT(keepLargeComponents(part.geometry(), 0.02), detail);
   return { inside: cap(A), outside: cap(B) };
 }
