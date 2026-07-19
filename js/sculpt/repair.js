@@ -36,11 +36,17 @@ function rebuild(g, triList, attrs) {
 }
 
 // Supprime les composantes connexes dont le nb de triangles < frac × la plus grosse.
+// CONSCIENT DES POSITIONS : les coutures (sommets dupliqués) ne fragmentent pas le maillage,
+// sinon on supprime des morceaux légitimes -> trous.
 function removeSmallIslands(g, frac) {
   const idx = g.index.array, V = g.attributes.position.count, nTri = idx.length / 3;
+  const pos = g.attributes.position.array, q = 1e5;
+  const posMap = new Map(); const rep = new Int32Array(V);
+  for (let v = 0; v < V; v++) { const pk = Math.round(pos[v * 3] * q) + '_' + Math.round(pos[v * 3 + 1] * q) + '_' + Math.round(pos[v * 3 + 2] * q); let r = posMap.get(pk); if (r === undefined) { r = v; posMap.set(pk, r); } rep[v] = r; }
   const parent = new Uint32Array(V); for (let i = 0; i < V; i++) parent[i] = i;
   const find = (x) => { while (parent[x] !== x) { parent[x] = parent[parent[x]]; x = parent[x]; } return x; };
   const union = (a, b) => { a = find(a); b = find(b); if (a !== b) parent[a] = b; };
+  for (let v = 0; v < V; v++) if (rep[v] !== v) union(v, rep[v]); // fusionne les sommets coïncidents
   for (let t = 0; t < nTri; t++) { union(idx[t * 3], idx[t * 3 + 1]); union(idx[t * 3 + 1], idx[t * 3 + 2]); }
   const triCount = new Map();
   for (let t = 0; t < nTri; t++) { const r = find(idx[t * 3]); triCount.set(r, (triCount.get(r) || 0) + 1); }

@@ -10,14 +10,17 @@ const ATTRS = ['position', 'normal', 'uv', 'color'];
 const DIM = { position: 3, normal: 3, uv: 2, color: 3 };
 
 class Part {
-  constructor(src, attrs, V) { this.src = src; this.attrs = attrs; this.V = V; this.out = {}; for (const a of attrs) this.out[a] = []; this.idx = []; this.vmap = new Map(); this.emap = new Map(); this.n = 0; }
+  constructor(src, attrs, V, rep) { this.src = src; this.attrs = attrs; this.V = V; this.rep = rep; this.out = {}; for (const a of attrs) this.out[a] = []; this.idx = []; this.vmap = new Map(); this.emap = new Map(); this.n = 0; }
   orig(i) {
     let m = this.vmap.get(i); if (m !== undefined) return m;
     m = this.n++; for (const a of this.attrs) { const d = DIM[a], s = this.src[a]; for (let c = 0; c < d; c++) this.out[a].push(s[i * d + c]); }
     this.vmap.set(i, m); return m;
   }
   cross(i, j, t) {
-    const key = i < j ? i * this.V + j : j * this.V + i;
+    // clé par arête CANONIQUE (positions) : là où la coupe croise une couture, les copies
+    // coïncidentes doivent partager le MÊME sommet de croisement, sinon la coupe a une fente.
+    const ri = this.rep[i], rj = this.rep[j];
+    const key = ri < rj ? ri * this.V + rj : rj * this.V + ri;
     let m = this.emap.get(key); if (m !== undefined) return m;
     m = this.n++; for (const a of this.attrs) { const d = DIM[a], s = this.src[a]; for (let c = 0; c < d; c++) this.out[a].push(s[i * d + c] + (s[j * d + c] - s[i * d + c]) * t); }
     this.emap.set(key, m); return m;
@@ -36,9 +39,15 @@ class Part {
 // deviendraient de « petits objets invisibles » après bouchage. Préserve tous les attributs.
 function keepLargeComponents(geo, frac) {
   const idx = geo.index.array, V = geo.attributes.position.count, nTri = idx.length / 3;
+  const pos = geo.attributes.position.array, q = 1e5;
+  // Connectivité CONSCIENTE DES POSITIONS : les coutures (sommets dupliqués) ne doivent PAS
+  // fragmenter le maillage, sinon on supprime des morceaux légitimes du corps -> trous.
+  const posMap = new Map(); const rep = new Int32Array(V);
+  for (let v = 0; v < V; v++) { const pk = Math.round(pos[v * 3] * q) + '_' + Math.round(pos[v * 3 + 1] * q) + '_' + Math.round(pos[v * 3 + 2] * q); let r = posMap.get(pk); if (r === undefined) { r = v; posMap.set(pk, r); } rep[v] = r; }
   const parent = new Uint32Array(V); for (let i = 0; i < V; i++) parent[i] = i;
   const find = (x) => { while (parent[x] !== x) { parent[x] = parent[parent[x]]; x = parent[x]; } return x; };
   const uni = (a, b) => { a = find(a); b = find(b); if (a !== b) parent[a] = b; };
+  for (let v = 0; v < V; v++) if (rep[v] !== v) uni(v, rep[v]); // fusionne les sommets coïncidents
   for (let t = 0; t < nTri; t++) { uni(idx[t * 3], idx[t * 3 + 1]); uni(idx[t * 3 + 1], idx[t * 3 + 2]); }
   const cnt = new Map(); for (let t = 0; t < nTri; t++) { const r = find(idx[t * 3]); cnt.set(r, (cnt.get(r) || 0) + 1); }
   if (cnt.size <= 1) return geo;
@@ -66,7 +75,11 @@ export function splitByMask(geometry, mask, threshold = 0.5, detail = 10) {
   const idx = geometry.index.array, V = geometry.attributes.position.count;
   const attrs = ATTRS.filter((a) => geometry.attributes[a]);
   const src = {}; for (const a of attrs) src[a] = geometry.attributes[a].array;
-  const A = new Part(src, attrs, V), B = new Part(src, attrs, V); // A = masqué, B = non masqué
+  // rep par position : les sommets coïncidents (coutures) partagent un canonique -> la coupe
+  // reste continue quand elle croise une couture (sinon fentes dans la découpe).
+  const pos = src.position, q = 1e5, posMap = new Map(), rep = new Int32Array(V);
+  for (let v = 0; v < V; v++) { const pk = Math.round(pos[v * 3] * q) + '_' + Math.round(pos[v * 3 + 1] * q) + '_' + Math.round(pos[v * 3 + 2] * q); let r = posMap.get(pk); if (r === undefined) { r = v; posMap.set(pk, r); } rep[v] = r; }
+  const A = new Part(src, attrs, V, rep), B = new Part(src, attrs, V, rep); // A = masqué, B = non masqué
   const inside = (v) => mask[v] >= threshold;
   const tcross = (p, o) => { const d = mask[o] - mask[p]; let t = Math.abs(d) < 1e-9 ? 0.5 : (threshold - mask[p]) / d; return t < 0 ? 0 : t > 1 ? 1 : t; };
 
