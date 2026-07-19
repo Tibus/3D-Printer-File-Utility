@@ -48,6 +48,7 @@ export function initScene() {
   const grid = new THREE.GridHelper(4, 20, 0x444466, 0x2a2a44);
   grid.position.y = -0.001;
   scene.add(grid);
+  state.grid = grid;
 
   // Curseur brush : un cercle orienté sur la surface
   const brushGeom = new THREE.RingGeometry(0.98, 1, 48);
@@ -63,4 +64,13 @@ export function initScene() {
   brushMesh.visible = false;
   scene.add(brushMesh);
   state.brushMesh = brushMesh;
+
+  // Point de collision (toujours visible, y compris pendant le stroke), façon Nomad.
+  const dotGeom = new THREE.SphereGeometry(1, 16, 12);
+  const dotMat = new THREE.MeshBasicMaterial({ color: 0x22d3ee, depthTest: false, transparent: true, opacity: 0.95 });
+  const brushDot = new THREE.Mesh(dotGeom, dotMat);
+  brushDot.renderOrder = 1000;
+  brushDot.visible = false;
+  scene.add(brushDot);
+  state.brushDot = brushDot;
 }

@@ -39,28 +39,6 @@ function boundaryLoops(idx, pos) {
   return loops;
 }
 
-// Le polygone 2D (px,py sur n sommets) est-il simple (aucune paire d'arêtes NON adjacentes
-// ne se croise) ? Si oui, le CDT contraint est fiable même si le bord 3D n'est pas plan
-// (on obtient juste un cap ~plat). Le CDT ne s'effondre que si la projection s'auto-intersecte.
-function isSimplePolygon(px, py, n) {
-  if (n < 4) return true;
-  const orient = (ax, ay, bx, by, cx, cy) => { const v = (by - ay) * (cx - bx) - (bx - ax) * (cy - by); return v > 1e-12 ? 1 : (v < -1e-12 ? -1 : 0); };
-  const cross = (ax, ay, bx, by, cx, cy, dx, dy) => {
-    const o1 = orient(ax, ay, bx, by, cx, cy), o2 = orient(ax, ay, bx, by, dx, dy);
-    const o3 = orient(cx, cy, dx, dy, ax, ay), o4 = orient(cx, cy, dx, dy, bx, by);
-    return o1 !== o2 && o3 !== o4 && o1 && o2 && o3 && o4; // croisement propre (pas simple contact)
-  };
-  for (let i = 0; i < n; i++) {
-    const i2 = (i + 1) % n;
-    for (let j = i + 1; j < n; j++) {
-      const j2 = (j + 1) % n;
-      if (i2 === j || i === j2 || i2 === j2) continue; // arêtes adjacentes -> ignorer
-      if (cross(px[i], py[i], px[i2], py[i2], px[j], py[j], px[j2], py[j2])) return false;
-    }
-  }
-  return true;
-}
-
 // Bouche toutes les boucles de bord de geometry par CDT + grille interne (densité detail).
 // Retourne une NOUVELLE géométrie (normales recalculées), ou geometry si pas de bord.
 export function fillLoopsCDT(geometry, detail = 10) {
@@ -127,30 +105,31 @@ export function fillLoopsCDT(geometry, detail = 10) {
     // projection 2D du contour
     const px = [], py = [];
     for (const v of loop) { const dx = pos[v * 3] - cx, dy = pos[v * 3 + 1] - cy, dz = pos[v * 3 + 2] - cz; px.push(dx * Ux + dy * Uy + dz * Uz); py.push(dx * Vx + dy * Vy + dz * Vz); }
-    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
-    for (let i = 0; i < n; i++) { if (px[i] < x0) x0 = px[i]; if (px[i] > x1) x1 = px[i]; if (py[i] < y0) y0 = py[i]; if (py[i] > y1) y1 = py[i]; }
     const inPoly = (qx, qy) => { let ins = false; for (let i = 0, j = n - 1; i < n; j = i++) { const xi = px[i], yi = py[i], xj = px[j], yj = py[j]; if (((yi > qy) !== (yj > qy)) && (qx < ((xj - xi) * (qy - yi)) / (yj - yi) + xi)) ins = !ins; } return ins; };
 
     // orientation : normale du cap doit pointer vers l'extérieur (loin du centre global)
     const outward = ((cx - bc.x) * nx + (cy - bc.y) * ny + (cz - bc.z) * nz) >= 0;
-    // On garde le CDT (grille sculptable) dès que la projection 2D est SIMPLE — même si le
-    // bord n'est pas plan (on obtient un cap plat, ce qui convient). Éventail 3D uniquement
-    // pour les bords repliés (projection auto-intersectante) ou les boucles très longues.
-    if (n > 400 || !isSimplePolygon(px, py, n)) { fanLoop(loop, n, cx, cy, cz, outward); fanCount++; continue; }
+    // On tente le CDT CLASSIQUE (triangulation contrainte du contour, PAS de pôle central ni
+    // de grille interne) même sur de grandes boucles / projection un peu auto-intersectante
+    // (le carve pair-impair + le budget de constrainEdges gèrent la robustesse ; échec ->
+    // repli éventail via le try/catch). Garde-fou d'extrême sur les boucles gigantesques.
+    if (n > 60000) { fanLoop(loop, n, cx, cy, cz, outward); fanCount++; continue; }
 
-    const localGlobal = loop.slice(); // local < n -> global existant ; interne -> nouveau
-    const step = (Math.max(x1 - x0, y1 - y0) || 1) / Math.max(2, detail | 0);
+    const localGlobal = loop.slice();
+    // Grille interne pour la QUALITÉ des triangles : un CDT du seul contour (dense) produit
+    // de longs triangles en lame (slivers). On ajoute des points internes espacés ~3× la
+    // longueur d'arête moyenne du contour (borné en nombre) -> triangulation ~uniforme.
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity, perim = 0;
+    for (let i = 0; i < n; i++) { const xi = px[i], yi = py[i]; if (xi < x0) x0 = xi; if (xi > x1) x1 = xi; if (yi < y0) y0 = yi; if (yi > y1) y1 = yi; const j = (i + 1) % n; perim += Math.hypot(px[j] - xi, py[j] - yi); }
+    const avgEdge = perim / n || 1; const area = (x1 - x0) * (y1 - y0) || 1; const MAXPTS = 5000;
+    let step = avgEdge * 3; if (area / (step * step) > MAXPTS) step = Math.sqrt(area / MAXPTS);
     for (let gy = y0 + step * 0.5; gy < y1; gy += step) for (let gx = x0 + step * 0.5; gx < x1; gx += step) {
       if (!inPoly(gx, gy)) continue;
       px.push(gx); py.push(gy);
       const wx = cx + gx * Ux + gy * Vx, wy = cy + gx * Uy + gy * Vy, wz = cz + gx * Uz + gy * Vz;
-      for (const a of attrs) {
-        if (a === 'position') out.position.push(wx, wy, wz);
-        else { const d = DIM[a]; for (let c = 0; c < d; c++) { let s = 0; for (const v of loop) s += src[a][v * d + c]; out[a].push(s / n); } } // attr interne = moyenne du contour
-      }
+      for (const a of attrs) { if (a === 'position') out.position.push(wx, wy, wz); else { const d = DIM[a]; for (let c = 0; c < d; c++) { let s = 0; for (const v of loop) s += src[a][v * d + c]; out[a].push(s / n); } } }
       localGlobal.push(V++);
     }
-
     const np = px.length; const DX = new Float64Array(px), DY = new Float64Array(py);
     let tris;
     try {

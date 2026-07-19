@@ -9,7 +9,7 @@ import {
   detachObject, attachObject, disposeObject,
 } from './loader.js';
 import {
-  raycastSurface, updateBrushCursor, performStroke,
+  raycastSurface, updateBrushCursor, hideBrushCursor, performStroke,
   startGrab, moveGrab, endGrab, beginStroke,
   recordStrokeBegin, recordStrokeEnd,
 } from './brush.js';
@@ -26,6 +26,7 @@ import { autoOrient } from './orient.js';
 import { decimateMesh } from './decimate.js';
 import { applyDisplayMode } from './display.js';
 import { saveScene, loadScene, clearScene } from './autosave.js';
+import { captureView, reprojectToUV, compositeLayers, applyTextureCanvas, hasPendingCam, captureSquareSidePx, paintMaskDab, readMaskCanvas, disposeLayerMask } from './retexture.js';
 import { splitByMask } from './split-mask.js';
 import { pushGeom, pushAction, pushMask, undo, redo, setHistoryListener } from './history.js';
 import { initGizmo, activateGizmo, deactivateGizmo, setAltPivot, isGizmoActive } from './gizmo.js';
@@ -91,9 +92,10 @@ function setMouseFromEvent(e) {
 }
 
 function modifiersFor(e) {
-  // Shift => lissage temporaire ; Ctrl/Cmd => inverser (remove) le draw
+  // Shift => lissage temporaire ; Alt (ou Ctrl/Cmd) => inverser l'outil courant
+  // (draw retire, inflate dégonfle, pinch écarte, masque démasque, etc.)
   if (e.shiftKey) return { tool: 'smooth' };
-  if (e.ctrlKey || e.metaKey) return { invert: !state.params.invert };
+  if (e.altKey || e.ctrlKey || e.metaKey) return { invert: !state.params.invert };
   return {};
 }
 
@@ -134,7 +136,7 @@ function startLasso(e) {
   lassoing = true;
   lassoPts = [{ x: e.clientX, y: e.clientY }];
   state.controls.enabled = false;
-  state.brushMesh.visible = false;
+  hideBrushCursor();
   lassoSvg.style.display = 'block';
   updateLassoPath();
   try { dom.setPointerCapture(e.pointerId); } catch (_) {}
@@ -383,7 +385,7 @@ restoreAutosave();
 dom.addEventListener('pointerdown', (e) => {
   if (e.button !== 0 || !state.targetMesh || !state.targetMesh.visible) return;
   if (radiusMode) return; // réglage du rayon en cours (X maintenu)
-  if (state.params.tool === 'gizmo') return; // TransformControls gère ses propres events
+  if (state.params.tool === 'gizmo' || state.params.tool === 'retexture') return; // pas de sculpt
   if (state.params.tool === 'split') { startLasso(e); return; }
   setMouseFromEvent(e);
   const hit = raycastSurface();
@@ -398,9 +400,10 @@ dom.addEventListener('pointerdown', (e) => {
 
   if (state.params.tool === 'move') {
     if (!startGrab(hit)) { sculpting = false; state.controls.enabled = true; }
-    state.brushMesh.visible = false;
+    hideBrushCursor();
   } else {
     _ls.has = false;
+    updateBrushCursor(hit, false, false); // dès la pression : cercle caché, point de collision gardé
     beginStroke(); // nouvelle session d'accumulation (buildup plafonné)
     stampSpaced(hit.point, modifiersFor(e)); // premier coup au clic
   }
@@ -418,7 +421,7 @@ function processMove() {
   pendingMods = null;
 
   if (!sculpting) {
-    if (state.params.tool === 'split' || state.params.tool === 'gizmo') { state.brushMesh.visible = false; return; }
+    if (state.params.tool === 'split' || state.params.tool === 'gizmo' || state.params.tool === 'retexture') { hideBrushCursor(); return; }
     updateBrushCursor(raycastSurface());
     return;
   }
@@ -427,7 +430,7 @@ function processMove() {
     moveGrab();
   } else {
     const hit = raycastSurface();
-    updateBrushCursor(hit, false); // orientation figée pendant le stroke (perf)
+    updateBrushCursor(hit, false, false); // pendant le stroke : cercle caché, point de collision gardé
     if (hit) stampSpaced(hit.point, mods);
   }
   perf.sculptLast = performance.now() - st;
@@ -472,7 +475,7 @@ function onPointerUp(e) {
 }
 dom.addEventListener('pointerup', onPointerUp);
 dom.addEventListener('pointercancel', onPointerUp);
-dom.addEventListener('pointerleave', () => { if (!lassoing) state.brushMesh.visible = false; });
+dom.addEventListener('pointerleave', () => { if (!lassoing) hideBrushCursor(); });
 
 // Empêche le menu contextuel de gêner (au cas où on mappe le clic droit plus tard)
 dom.addEventListener('contextmenu', (e) => e.preventDefault());
@@ -511,6 +514,212 @@ document.getElementById('new-scene-btn').addEventListener('click', () => {
     sel.addEventListener('change', (e) => { state.params.displayMode = e.target.value; applyDisplayMode(state.objects, e.target.value); });
   }
 }
+
+// ---------- Retexture : compositing de la texture couleur (calques) ----------
+const RETEX_SIZE = 2048;
+let _retexSelLayer = null;         // calque sélectionné (mode 'layer')
+let _retexMaskMode = 'layer';      // 'layer' = masque du calque sélectionné ; 'pregen' = masque pré-génération
+let _retexPendingMask = null;      // { _maskRT, mask } peint avant import, appliqué au prochain calque
+let _retexHiliteCanvas = null;     // calque de surbrillance du masque pré-gen (feedback visuel)
+// Cible de peinture de masque selon le mode courant.
+function retexPaintTarget() {
+  if (_retexMaskMode === 'pregen') { if (!_retexPendingMask) _retexPendingMask = { name: '(pré-gen)' }; return _retexPendingMask; }
+  return _retexSelLayer;
+}
+function retexHilite() {
+  if (!_retexHiliteCanvas) { _retexHiliteCanvas = document.createElement('canvas'); _retexHiliteCanvas.width = _retexHiliteCanvas.height = RETEX_SIZE; const c = _retexHiliteCanvas.getContext('2d'); c.fillStyle = '#22d3ee'; c.fillRect(0, 0, RETEX_SIZE, RETEX_SIZE); }
+  return _retexHiliteCanvas;
+}
+function updateRetexModeUI() {
+  const btn = document.getElementById('retex-pregen'); if (btn) btn.style.outline = _retexMaskMode === 'pregen' ? '2px solid #22d3ee' : '';
+}
+// Cadre de capture 1:1 : carré centré de côté min(largeur, hauteur) de la vue.
+function updateCaptureFrame(show) {
+  const el = document.getElementById('capture-frame'); if (!el) return;
+  if (show === undefined) show = state.params.tool === 'retexture';
+  if (!show) { el.style.display = 'none'; return; }
+  const S = captureSquareSidePx();
+  el.style.width = S + 'px'; el.style.height = S + 'px';
+  el.style.left = ((window.innerWidth - S) / 2) + 'px';
+  el.style.top = ((window.innerHeight - S) / 2) + 'px';
+  el.style.display = 'block';
+}
+window.addEventListener('resize', () => updateCaptureFrame());
+// Aperçu debug de la texture composite (bas-gauche, en mode Retexture).
+function updateTexturePreview(show) {
+  const wrap = document.getElementById('texture-preview'); if (!wrap) return;
+  if (show === undefined) show = state.params.tool === 'retexture';
+  const mesh = state.targetMesh;
+  if (!show || !mesh) { wrap.style.display = 'none'; return; }
+  const base = mesh.userData.baseMat || mesh.material;
+  const src = base && base.map && base.map.image;
+  const cv = document.getElementById('texture-preview-canvas'); const ctx = cv.getContext('2d');
+  ctx.clearRect(0, 0, cv.width, cv.height);
+  if (src) { try { ctx.drawImage(src, 0, 0, cv.width, cv.height); } catch (_) { ctx.fillStyle = '#333'; ctx.fillRect(0, 0, cv.width, cv.height); } }
+  else { ctx.fillStyle = '#333'; ctx.fillRect(0, 0, cv.width, cv.height); }
+  wrap.style.display = 'block';
+}
+function retexLayersOf(mesh) {
+  if (!mesh.userData._retexLayers) {
+    mesh.userData._retexLayers = [];
+    const base = mesh.userData.baseMat || mesh.material;
+    mesh.userData._retexBase = (base && base.map && base.map.image) ? base.map.image : null;
+  }
+  return mesh.userData._retexLayers;
+}
+function recomposeRetex() {
+  const mesh = state.targetMesh; if (!mesh) return;
+  const layers = retexLayersOf(mesh);
+  // En mode pré-génération : surbrillance de la zone du masque pré-gen (feedback visuel).
+  let display = layers;
+  if (_retexMaskMode === 'pregen' && _retexPendingMask && _retexPendingMask.mask) {
+    display = [...layers, { name: '_hilite', canvas: retexHilite(), mask: _retexPendingMask.mask, opacity: 0.55, visible: true }];
+  }
+  const cv = compositeLayers(mesh.userData._retexBase, display, RETEX_SIZE);
+  applyTextureCanvas(mesh, cv);
+  updateTexturePreview(true);
+}
+function loadImageFile(file) {
+  return new Promise((res, rej) => { const url = URL.createObjectURL(file); const im = new Image(); im.onload = () => { URL.revokeObjectURL(url); res(im); }; im.onerror = rej; im.src = url; });
+}
+function renderRetexLayers() {
+  const box = document.getElementById('retex-layers'); if (!box) return; box.innerHTML = '';
+  updateRetexModeUI();
+  const mesh = state.targetMesh; const layers = mesh ? retexLayersOf(mesh) : [];
+  if (!layers.length) { box.innerHTML = '<div style="font-size:11px;color:#888;">Aucun calque</div>'; return; }
+  for (let i = layers.length - 1; i >= 0; i--) { // du dessus (dernier) vers le bas
+    const l = layers[i];
+    const row = document.createElement('div'); row.className = 'obj-row' + (l === _retexSelLayer ? ' active' : '');
+    const eye = document.createElement('button'); eye.className = 'obj-btn'; eye.textContent = l.visible ? '👁' : '🚫';
+    eye.onclick = () => { l.visible = !l.visible; recomposeRetex(); renderRetexLayers(); };
+    const name = document.createElement('span'); name.className = 'obj-name'; name.textContent = (l.mask ? '🖌 ' : '') + l.name; name.style.fontSize = '11px'; name.style.cursor = 'pointer';
+    name.title = 'Sélectionner (peins sur l’objet pour masquer/révéler ce calque)';
+    name.onclick = () => {
+      _retexSelLayer = (_retexSelLayer === l ? null : l);
+      _retexMaskMode = 'layer'; // sélectionner un calque -> mode masque de calque
+      recomposeRetex(); renderRetexLayers();
+      setStatus(_retexSelLayer ? 'Masque de calque — peins sur l’objet pour révéler (Alt = effacer).' : 'Calque désélectionné.');
+    };
+    const op = document.createElement('input'); op.type = 'range'; op.min = 0; op.max = 100; op.value = Math.round((l.opacity ?? 1) * 100); op.style.width = '56px';
+    op.oninput = () => { l.opacity = op.value / 100; recomposeRetex(); };
+    const up = document.createElement('button'); up.className = 'obj-btn'; up.textContent = '↑'; up.title = 'Monter';
+    up.onclick = () => { if (i < layers.length - 1) { const t = layers[i]; layers[i] = layers[i + 1]; layers[i + 1] = t; recomposeRetex(); renderRetexLayers(); } };
+    const del = document.createElement('button'); del.className = 'obj-btn'; del.textContent = '🗑'; del.title = 'Supprimer';
+    del.onclick = () => { if (_retexSelLayer === l) _retexSelLayer = null; disposeLayerMask(l); layers.splice(i, 1); recomposeRetex(); renderRetexLayers(); };
+    row.append(eye, name, op, up, del);
+    box.appendChild(row);
+  }
+}
+document.getElementById('retex-capture').addEventListener('click', () => {
+  if (!state.targetMesh) { setStatus('Aucun objet.'); return; }
+  const url = captureView();
+  const a = document.createElement('a'); a.href = url; a.download = 'capture-vue.png'; a.click();
+  setStatus('Vue capturée + téléchargée. Modifie-la (IA) puis « Importer (reprojeté) » sans bouger la caméra… (les matrices sont mémorisées).');
+});
+let _retexMode = 'proj';
+document.getElementById('retex-import-proj').addEventListener('click', () => {
+  if (!hasPendingCam()) { setStatus('Capture d’abord la vue (📷).'); return; }
+  _retexMode = 'proj'; document.getElementById('retex-file').click();
+});
+document.getElementById('retex-import-uv').addEventListener('click', () => { _retexMode = 'uv'; document.getElementById('retex-file').click(); });
+document.getElementById('retex-replace').addEventListener('click', () => { _retexMode = 'replace'; document.getElementById('retex-file').click(); });
+document.getElementById('retex-download').addEventListener('click', () => {
+  const mesh = state.targetMesh; if (!mesh) { setStatus('Aucun objet.'); return; }
+  const base = mesh.userData.baseMat || mesh.material;
+  const img = base && base.map && base.map.image;
+  if (!img) { setStatus('Aucune texture à télécharger.'); return; }
+  let canvas;
+  if (img instanceof HTMLCanvasElement) canvas = img;
+  else { // Image/ImageBitmap -> passer par un canvas
+    const w = img.naturalWidth || img.width || RETEX_SIZE, h = img.naturalHeight || img.height || RETEX_SIZE;
+    canvas = document.createElement('canvas'); canvas.width = w; canvas.height = h; canvas.getContext('2d').drawImage(img, 0, 0);
+  }
+  const a = document.createElement('a'); a.href = canvas.toDataURL('image/png'); a.download = `${mesh.name || 'texture'}.png`; a.click();
+  setStatus('Texture téléchargée.');
+});
+document.getElementById('retex-file').addEventListener('change', async (e) => {
+  const file = e.target.files[0]; e.target.value = ''; if (!file) return;
+  const mesh = state.targetMesh; if (!mesh) { setStatus('Aucun objet.'); return; }
+  const layers = retexLayersOf(mesh);
+  let img; try { img = await loadImageFile(file); } catch (_) { setStatus('Image illisible.'); return; }
+  if (_retexMode === 'replace') {
+    // remplace la texture de base (UV) ; les calques existants restent composés par-dessus
+    const b = document.createElement('canvas'); b.width = b.height = RETEX_SIZE; b.getContext('2d').drawImage(img, 0, 0, RETEX_SIZE, RETEX_SIZE);
+    mesh.userData._retexBase = b;
+    recomposeRetex(); renderRetexLayers();
+    setStatus('Texture de base remplacée.');
+    return;
+  }
+  let canvas;
+  if (_retexMode === 'proj') {
+    showLoading(true, 'Reprojection sur l’UV…');
+    await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+    try { canvas = reprojectToUV(img, mesh, RETEX_SIZE); }
+    catch (err) { console.error(err); setStatus(`Reprojection : ${err.message}`); showLoading(false); return; }
+    showLoading(false);
+  } else {
+    canvas = document.createElement('canvas'); canvas.width = canvas.height = RETEX_SIZE;
+    canvas.getContext('2d').drawImage(img, 0, 0, RETEX_SIZE, RETEX_SIZE);
+  }
+  const newLayer = { name: file.name.replace(/\.[^.]+$/, '').slice(0, 16), canvas, opacity: 1, visible: true };
+  // Si un masque pré-génération a été peint, il devient le masque de ce calque.
+  let usedPregen = false;
+  if (_retexPendingMask && _retexPendingMask.mask) {
+    newLayer.mask = _retexPendingMask.mask; newLayer._maskRT = _retexPendingMask._maskRT;
+    _retexPendingMask = null; _retexMaskMode = 'layer'; _retexSelLayer = newLayer; usedPregen = true;
+  }
+  layers.push(newLayer);
+  recomposeRetex(); renderRetexLayers();
+  setStatus(`Calque ajouté (${_retexMode === 'proj' ? 'reprojeté' : 'UV direct'})${usedPregen ? ' + masque pré-génération appliqué' : ''}.`);
+});
+
+// ---- Peinture du masque alpha du calque sélectionné (brush 3D sur l'objet) ----
+let _retexPainting = false, _retexPendingPt = null, _retexScheduled = false, _retexErase = false;
+function retexPaintFrame() {
+  _retexScheduled = false;
+  const mesh = state.targetMesh, l = retexPaintTarget();
+  if (!_retexPainting || !_retexPendingPt || !mesh || !l) return;
+  const radius = state.params.size;
+  const hardness = state.params.falloffHardness != null ? state.params.falloffHardness : 0.5;
+  const strength = Math.max(0.05, (state.params.intensity / 100) * 0.5);
+  paintMaskDab(mesh, l, _retexPendingPt.clone(), radius, hardness, strength, _retexErase, RETEX_SIZE, mesh.matrixWorld);
+  _retexPendingPt = null;
+  readMaskCanvas(l, RETEX_SIZE); recomposeRetex();
+}
+function retexScheduleFrame() { if (!_retexScheduled) { _retexScheduled = true; requestAnimationFrame(retexPaintFrame); } }
+
+dom.addEventListener('pointerdown', (e) => {
+  if (state.params.tool !== 'retexture' || e.button !== 0) return;
+  if (_retexMaskMode === 'layer' && !_retexSelLayer) return; // rien à peindre
+  if (!state.targetMesh || !state.targetMesh.visible) return;
+  setMouseFromEvent(e);
+  const hit = raycastSurface();
+  if (!hit) return;
+  _retexPainting = true; _retexErase = e.altKey || e.ctrlKey || e.metaKey;
+  state.controls.enabled = false;
+  try { dom.setPointerCapture(e.pointerId); } catch (_) {}
+  _retexPendingPt = hit.point.clone(); retexScheduleFrame();
+});
+dom.addEventListener('pointermove', (e) => {
+  if (!_retexPainting) return;
+  setMouseFromEvent(e);
+  const hit = raycastSurface();
+  if (hit) { _retexPendingPt = hit.point.clone(); retexScheduleFrame(); }
+});
+function endRetexPaint(e) {
+  if (!_retexPainting) return;
+  _retexPainting = false; state.controls.enabled = true;
+  if (e && e.pointerId !== undefined) { try { dom.releasePointerCapture(e.pointerId); } catch (_) {} }
+  const l = retexPaintTarget(); if (l) { readMaskCanvas(l, RETEX_SIZE); recomposeRetex(); renderRetexLayers(); }
+}
+dom.addEventListener('pointerup', endRetexPaint);
+dom.addEventListener('pointercancel', endRetexPaint);
+
+document.getElementById('retex-pregen').addEventListener('click', () => {
+  if (_retexMaskMode === 'pregen') { _retexMaskMode = 'layer'; setStatus('Mode masque de calque.'); }
+  else { _retexMaskMode = 'pregen'; _retexSelLayer = null; setStatus('Masque pré-génération — peins la zone (surbrillance). Elle deviendra le masque du prochain calque importé.'); }
+  recomposeRetex(); renderRetexLayers();
+});
 document.getElementById('remesh-btn').addEventListener('click', async () => {
   const mesh = state.targetMesh;
   if (!mesh) { setStatus('Aucun objet à remailler.'); return; }
@@ -732,11 +941,15 @@ toolButtons.forEach((btn) => {
     // L'inversion n'a de sens que pour le draw
     document.getElementById('invert-row').style.display =
       state.params.tool === 'draw' ? '' : 'none';
-    const t = state.params.tool, isGizmo = t === 'gizmo', isMask = t === 'mask';
-    if (t === 'split' || isGizmo) state.brushMesh.visible = false;
+    const t = state.params.tool, isGizmo = t === 'gizmo', isMask = t === 'mask', isRetex = t === 'retexture';
+    if (t === 'split' || isGizmo || isRetex) hideBrushCursor();
     if (isGizmo) activateGizmo(state.targetMesh); else deactivateGizmo();
     document.getElementById('gizmo-hint').style.display = isGizmo ? '' : 'none';
     document.getElementById('mask-panel').style.display = isMask ? 'flex' : 'none';
+    document.getElementById('retexture-panel').style.display = isRetex ? 'flex' : 'none';
+    updateCaptureFrame(isRetex);
+    updateTexturePreview(isRetex);
+    if (isRetex) renderRetexLayers();
     if (isMask && state.targetMesh) {
       ensureMask(state.targetMesh.geometry, state.targetMesh.material);
       const b = state.targetMesh.geometry.userData.maskBlur || 0;

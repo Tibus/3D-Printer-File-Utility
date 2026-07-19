@@ -12,6 +12,20 @@
 <body>
 <div id="canvas-container"></div>
 
+<!-- Cadre de capture 1:1 (mode Retexture) : montre la zone envoyée à l'IA -->
+<div id="capture-frame" style="display:none; position:fixed; pointer-events:none; z-index:50;
+     border:2px dashed #22d3ee; box-shadow:0 0 0 9999px rgba(10,10,20,0.45);">
+  <span style="position:absolute; top:-22px; left:0; font:600 12px/1 system-ui,sans-serif; color:#22d3ee;">Zone de capture 1:1 (IA)</span>
+</div>
+
+<!-- Aperçu debug de la texture composite (mode Retexture) -->
+<div id="texture-preview" style="display:none; position:fixed; left:12px; bottom:12px; z-index:60;
+     background:#12121e; border:1px solid #2a2a44; border-radius:8px; padding:6px;">
+  <div style="font:600 11px/1.4 system-ui,sans-serif; color:#9a9ac0; margin-bottom:4px;">Texture (debug)</div>
+  <canvas id="texture-preview-canvas" width="200" height="200"
+     style="display:block; width:200px; height:200px; image-rendering:pixelated; background:#000; border-radius:4px;"></canvas>
+</div>
+
 <!-- Panneau haut-gauche : navigation + chargement -->
 <div id="top-left">
   <a href="index.html" class="sculpt-back-link">
@@ -66,6 +80,9 @@
     <button class="tool-btn" data-tool="mask" title="Masquer des zones (protégées des autres outils). Ctrl/Cmd = démasquer">
       <span class="tool-emoji">🛡️</span> Masque
     </button>
+    <button class="tool-btn" data-tool="retexture" title="Retexturing : compositing de la texture couleur (calques importés / reprojetés)">
+      <span class="tool-emoji">🎨</span> Retexture
+    </button>
   </div>
 
   <div id="mask-panel" style="display:none; flex-direction:column; gap:10px;">
@@ -81,6 +98,18 @@
       </label>
     </div>
     <button id="mask-split" class="control-btn" title="Séparer l'objet le long du masque (comme le lasso) et boucher les caps">✂️ Séparer le masque</button>
+  </div>
+
+  <div id="retexture-panel" style="display:none; flex-direction:column; gap:10px;">
+    <button id="retex-capture" class="control-btn" title="Télécharge un screenshot de la vue (à modifier par IA, puis à réimporter)">📷 Capturer la vue (pour IA)</button>
+    <button id="retex-import-proj" class="control-btn" title="Importer une image vue-caméra : reprojetée sur l'UV de l'objet">🖼️ Importer (reprojeté)</button>
+    <button id="retex-import-uv" class="control-btn" title="Importer une image déjà en UV (texture dépliée)">🗺️ Importer (UV direct)</button>
+    <button id="retex-replace" class="control-btn" title="Remplacer la texture de base par une image UV uploadée">📤 Remplacer la texture</button>
+    <button id="retex-pregen" class="control-btn" title="Peindre un masque AVANT import : il deviendra le masque du prochain calque importé">🎯 Masque pré-génération</button>
+    <button id="retex-download" class="control-btn" title="Télécharger la texture composite (atlas UV) en PNG">💾 Télécharger la texture</button>
+    <div style="font-size:11.5px; color:#9a9ac0;">Calques (haut = dessus) :</div>
+    <div id="retex-layers" style="display:flex; flex-direction:column; gap:4px;"></div>
+    <input type="file" id="retex-file" accept="image/*" style="display:none">
   </div>
 
   <div id="gizmo-hint" style="display:none; font-size:11.5px; line-height:1.5; color:#9a9ac0;">

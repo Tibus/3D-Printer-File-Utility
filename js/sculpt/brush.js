@@ -108,10 +108,24 @@ export function raycastSurface() {
   return hits.length ? hits[0] : null;
 }
 
-export function updateBrushCursor(hit, orient = true) {
-  const brush = state.brushMesh;
-  if (!hit) { brush.visible = false; return; }
-  brush.visible = true;
+// Cache le curseur (cercle + point). Pour les outils non-brush (move/split/gizmo).
+export function hideBrushCursor() {
+  if (state.brushMesh) state.brushMesh.visible = false;
+  if (state.brushDot) state.brushDot.visible = false;
+}
+
+// hit : collision surface. showRing=false pendant un stroke -> on cache le cercle d'influence
+// mais on garde le POINT de collision visible (façon Nomad).
+export function updateBrushCursor(hit, orient = true, showRing = true) {
+  const brush = state.brushMesh, dot = state.brushDot;
+  if (!hit) { if (brush) brush.visible = false; if (dot) dot.visible = false; return; }
+  if (dot) {
+    dot.visible = true;
+    dot.position.copy(hit.point);
+    dot.scale.setScalar(Math.max(state.params.size * 0.05, 1e-4)); // petit point proportionnel
+  }
+  brush.visible = showRing;
+  if (!showRing) return; // stroke : cercle caché, on ne l'oriente pas
   brush.position.copy(hit.point);
   brush.scale.setScalar(state.params.size);
   if (!orient) return;

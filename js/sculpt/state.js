@@ -19,8 +19,11 @@ export const state = {
   groupMembers: null,      // Map<rep, Int32Array> : membres coïncidents (coutures UV)
   repNeighbors: null,      // Map<rep, Int32Array> : voisins unifiés à travers la couture
 
+  grid: null,        // grille du sol (masquée pendant les captures retexture)
+
   // Brush (curseur 3D)
-  brushMesh: null,
+  brushMesh: null,   // cercle d'influence (caché pendant le stroke)
+  brushDot: null,    // point de collision (toujours visible), façon Nomad
   brushActive: false,
 
   // Interaction

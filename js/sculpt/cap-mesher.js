@@ -71,8 +71,10 @@ export function constrainEdges(T, PX, PY, constraints, stats) {
   const third = (t, a, b) => { const [x, y, z] = T[t]; return (x !== a && x !== b) ? x : (y !== a && y !== b) ? y : z; };
 
   let failed = 0, work = 0;
-  const BUDGET = 40000; // budget global de flips : un bord dégénéré fait livelocker les flips
-  //  (des dizaines de M d'itérations = hang). Au-delà -> throw => repli éventail dans cap-loop.
+  // budget global de flips, échelonné sur le nb de contraintes (les grandes coupes ont
+  // beaucoup d'arêtes de bord légitimes). Un bord dégénéré livelock -> dépasse -> throw =>
+  // repli éventail dans cap-loop. Borne haute pour ne jamais hang.
+  const BUDGET = Math.min(4000000, Math.max(40000, constraints.length * 40));
   for (const [u, v] of constraints) {
     if (u === v || E.has(key(u, v))) continue;
     let start = -1, ex = -1, ey = -1;
