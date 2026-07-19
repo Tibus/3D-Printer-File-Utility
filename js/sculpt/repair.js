@@ -6,6 +6,7 @@
 
 import * as THREE from 'three';
 import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
+import { fillLoopsCDT } from './cap-loop.js';
 
 const ATTRS = ['position', 'uv', 'color'];
 const DIM = { position: 3, uv: 2, color: 3 };
@@ -51,7 +52,7 @@ function removeSmallIslands(g, frac) {
 }
 
 // Bouche les trous : boucles de bord (arêtes utilisées 1×) -> éventail vers le centroïde.
-function fillHoles(g) {
+export function fillHoles(g) {
   const idx = g.index.array, nTri = idx.length / 3;
   const attrs = attrsOf(g);
   const src = {}; for (const a of attrs) src[a] = g.attributes[a].array;
@@ -99,14 +100,14 @@ function fillHoles(g) {
   return { geom: ng, holes };
 }
 
-export function repairMesh(geometry, { islandFrac = 0.01, weldTol = 1e-4 } = {}) {
+export function repairMesh(geometry, { islandFrac = 0.01, weldTol = 1e-4, detail = 10 } = {}) {
   const before = geometry.attributes.position.count;
   let g = geometry.clone(); g.deleteAttribute('normal');
   if (!g.index) { const n = g.attributes.position.count; const ix = new Uint32Array(n); for (let i = 0; i < n; i++) ix[i] = i; g.setIndex(new THREE.BufferAttribute(ix, 1)); }
   g = mergeVertices(g, weldTol);
   const welded = before - g.attributes.position.count;
   const isl = removeSmallIslands(g, islandFrac); g = isl.geom;
-  const fh = fillHoles(g); g = fh.geom;
+  g = fillLoopsCDT(g, detail); // bouche les trous par CDT + grille interne (sculptable)
   g.computeVertexNormals();
-  return { geometry: g, stats: { welded, removedIslands: isl.removed, filledHoles: fh.holes, verts: g.attributes.position.count } };
+  return { geometry: g, stats: { welded, removedIslands: isl.removed, filledHoles: g.userData._filledHoles || 0, verts: g.attributes.position.count } };
 }

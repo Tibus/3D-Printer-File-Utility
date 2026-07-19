@@ -26,6 +26,7 @@ import { autoOrient } from './orient.js';
 import { decimateMesh } from './decimate.js';
 import { applyDisplayMode } from './display.js';
 import { saveScene, loadScene, clearScene } from './autosave.js';
+import { splitByMask } from './split-mask.js';
 import { pushGeom, pushAction, pushMask, undo, redo, setHistoryListener } from './history.js';
 import { initGizmo, activateGizmo, deactivateGizmo, setAltPivot, isGizmoActive } from './gizmo.js';
 import { ensureMask, invertMask, clearMask, setMaskBlur, rebuildMask, bakeMaskBlur, maskRecordBegin, maskRecordEnd } from './mask.js';
@@ -688,7 +689,7 @@ document.getElementById('repair-btn').addEventListener('click', () => {
   if (!mesh) { setStatus('Aucun objet à réparer.'); return; }
   if (isGizmoActive()) deactivateGizmo();
   try {
-    const { geometry, stats } = repairMesh(mesh.geometry);
+    const { geometry, stats } = repairMesh(mesh.geometry, { detail: state.params.cutDetail });
     const newMesh = createObject(geometry, baseMatOf(mesh).clone(), mesh.name);
     newMesh.position.copy(mesh.position); newMesh.updateMatrixWorld(true);
     const old = mesh;
@@ -751,6 +752,34 @@ document.getElementById('mask-clear').addEventListener('click', () => {
     () => { g.userData.maskSharp.set(old); rebuildMask(g); },
     () => clearMask(g),
   );
+});
+document.getElementById('mask-split').addEventListener('click', () => {
+  const mesh = state.targetMesh;
+  if (!mesh) { setStatus('Aucun objet.'); return; }
+  const maskAttr = mesh.geometry.attributes.mask;
+  if (!maskAttr) { setStatus('Peins d’abord un masque.'); return; }
+  if (isGizmoActive()) deactivateGizmo();
+  showLoading(true, 'Séparation du masque…');
+  const startedAt = performance.now();
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    try {
+      const res = splitByMask(mesh.geometry, maskAttr.array, 0.5, state.params.cutDetail);
+      if (!res) { setStatus('Rien à séparer (masque vide, total, ou sans frontière nette).'); return; }
+      const inMesh = createObject(res.inside, baseMatOf(mesh).clone());
+      const outMesh = createObject(res.outside, baseMatOf(mesh).clone());
+      inMesh.position.copy(mesh.position); inMesh.quaternion.copy(mesh.quaternion); inMesh.scale.copy(mesh.scale); inMesh.updateMatrixWorld(true);
+      outMesh.position.copy(mesh.position); outMesh.quaternion.copy(mesh.quaternion); outMesh.scale.copy(mesh.scale); outMesh.updateMatrixWorld(true);
+      detachObject(mesh); setActiveObject(outMesh); renderObjectList();
+      flashMesh(inMesh);
+      setStatus('Masque séparé (2 objets, caps bouchés).');
+      pushAction(
+        () => { detachObject(inMesh); detachObject(outMesh); attachObject(mesh); setActiveObject(mesh); renderObjectList(); },
+        () => { detachObject(mesh); attachObject(inMesh); attachObject(outMesh); setActiveObject(outMesh); renderObjectList(); },
+        () => { for (const m of [mesh, inMesh, outMesh]) if (!state.objects.includes(m)) disposeObject(m); },
+      );
+    } catch (err) { console.error(err); setStatus(`Séparation masque : ${err.message}`); }
+    finally { const wait = Math.max(0, 250 - (performance.now() - startedAt)); setTimeout(() => showLoading(false), wait); }
+  }));
 });
 {
   const range = document.getElementById('maskblur-range');
