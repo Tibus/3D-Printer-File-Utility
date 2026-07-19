@@ -7,6 +7,8 @@
 import * as THREE from 'three';
 import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 import { fillLoopsCDT } from './cap-loop.js';
+import { getManifold } from './split-manifold.js';
+import { geomFromManifoldMesh, reprojectAttrs } from './remesh.js';
 
 const ATTRS = ['position', 'uv', 'color'];
 const DIM = { position: 3, uv: 2, color: 3 };
@@ -100,7 +102,10 @@ export function fillHoles(g) {
   return { geom: ng, holes };
 }
 
-export function repairMesh(geometry, { islandFrac = 0.01, weldTol = 1e-4, detail = 10 } = {}) {
+// Réparation "douce" LEGACY (weld + îlots + bouchage CDT). Repli quand Manifold ne peut
+// pas traiter le maillage (ouvert / non-manifold). Peut altérer un maillage déjà propre :
+// à n'utiliser QUE si Manifold échoue.
+function repairMeshLegacy(geometry, { islandFrac = 0.01, weldTol = 1e-4, detail = 10 } = {}) {
   const before = geometry.attributes.position.count;
   let g = geometry.clone(); g.deleteAttribute('normal');
   if (!g.index) { const n = g.attributes.position.count; const ix = new Uint32Array(n); for (let i = 0; i < n; i++) ix[i] = i; g.setIndex(new THREE.BufferAttribute(ix, 1)); }
@@ -109,5 +114,39 @@ export function repairMesh(geometry, { islandFrac = 0.01, weldTol = 1e-4, detail
   const isl = removeSmallIslands(g, islandFrac); g = isl.geom;
   g = fillLoopsCDT(g, detail); // bouche les trous par CDT + grille interne (sculptable)
   g.computeVertexNormals();
-  return { geometry: g, stats: { welded, removedIslands: isl.removed, filledHoles: g.userData._filledHoles || 0, verts: g.attributes.position.count } };
+  return { geometry: g, stats: { method: 'legacy', welded, removedIslands: isl.removed, filledHoles: g.userData._filledHoles || 0, verts: g.attributes.position.count } };
+}
+
+// Réparation via MANIFOLD : construit un solide 2-manifold propre (soude les sommets,
+// répare l'orientation et les arêtes non-manifold) SANS abîmer un maillage déjà correct,
+// contrairement à la version legacy. UV/couleur réprojetés depuis l'original (Manifold ne
+// travaille que la position). Si Manifold ne peut pas (maillage ouvert / non réparable),
+// on retombe sur la réparation legacy (qui, elle, sait boucher les trous).
+export async function repairMesh(geometry, opts = {}) {
+  const before = geometry.attributes.position.count;
+  // source indexée + BVH (pour réprojeter UV/couleur ensuite)
+  const src = geometry.clone(); src.deleteAttribute('normal');
+  if (!src.index) { const n = src.attributes.position.count; const ix = new Uint32Array(n); for (let i = 0; i < n; i++) ix[i] = i; src.setIndex(new THREE.BufferAttribute(ix, 1)); }
+  try {
+    const { Manifold, Mesh } = await getManifold();
+    const pos = src.attributes.position.array, idx = src.index.array;
+    const mm = new Mesh({
+      numProp: 3,
+      vertProperties: pos instanceof Float32Array ? pos.slice() : Float32Array.from(pos),
+      triVerts: idx instanceof Uint32Array ? idx.slice() : new Uint32Array(idx),
+    });
+    mm.merge(); // soude les sommets coïncidents (rend le maillage manifold-ready)
+    const man = new Manifold(mm);
+    if (man.numTri() === 0) { man.delete(); throw new Error('non-manifold'); } // -> legacy
+    const genus = man.genus();
+    const outMesh = man.getMesh();
+    man.delete();
+    const g = geomFromManifoldMesh(outMesh); // position + normales recalculées
+    if (!src.boundsTree) src.computeBoundsTree({ setBoundingBox: true });
+    reprojectAttrs(g, src); // restaure UV/couleur depuis l'original
+    return { geometry: g, stats: { method: 'manifold', welded: Math.max(0, before - g.attributes.position.count), verts: g.attributes.position.count, genus } };
+  } catch (e) {
+    console.warn('[repair] Manifold impossible -> legacy', e && e.message);
+    return repairMeshLegacy(geometry, opts);
+  }
 }

@@ -10,13 +10,25 @@ import { delaunay, constrainEdges } from './cap-mesher.js';
 const ATTRS = ['position', 'uv', 'color'];
 const DIM = { position: 3, uv: 2, color: 3 };
 
-// Boucles de bord (arêtes utilisées une seule fois) -> listes d'indices de sommets.
-function boundaryLoops(idx) {
+// Boucles de bord (arêtes de bord réelles) -> listes d'indices de sommets.
+// CONSCIENT DES POSITIONS : les sommets coïncidents (coutures UV/normales d'un glTF, très
+// fréquentes — le maillage est fermé mais stocké avec des sommets dupliqués) sont fusionnés
+// pour COMPTER les arêtes. Sinon chaque couture paraît « utilisée une fois » -> des milliers
+// de faux trous -> le cap mélange tout. Le comptage se fait par sommet canonique (position),
+// mais les boucles renvoyées gardent les sommets RÉELS (pour recoudre exactement le cap).
+function boundaryLoops(idx, pos) {
+  const V = pos.length / 3, q = 1e5;
+  const posMap = new Map(); const rep = new Int32Array(V);
+  for (let v = 0; v < V; v++) {
+    const pk = Math.round(pos[v * 3] * q) + '_' + Math.round(pos[v * 3 + 1] * q) + '_' + Math.round(pos[v * 3 + 2] * q);
+    let r = posMap.get(pk); if (r === undefined) { r = v; posMap.set(pk, r); }
+    rep[v] = r;
+  }
   const key = (a, b) => (a < b ? a * 1e7 + b : b * 1e7 + a);
-  const use = new Map();
-  for (let t = 0; t < idx.length; t += 3) { const a = idx[t], b = idx[t + 1], c = idx[t + 2]; for (const [x, y] of [[a, b], [b, c], [c, a]]) use.set(key(x, y), (use.get(key(x, y)) || 0) + 1); }
-  const nextOf = new Map();
-  for (let t = 0; t < idx.length; t += 3) { const a = idx[t], b = idx[t + 1], c = idx[t + 2]; for (const [x, y] of [[a, b], [b, c], [c, a]]) if (use.get(key(x, y)) === 1) { let l = nextOf.get(x); if (!l) { l = []; nextOf.set(x, l); } l.push(y); } }
+  const use = new Map(); // comptage par arête CANONIQUE (positions)
+  for (let t = 0; t < idx.length; t += 3) { const A = rep[idx[t]], B = rep[idx[t + 1]], C = rep[idx[t + 2]]; for (const [x, y] of [[A, B], [B, C], [C, A]]) if (x !== y) use.set(key(x, y), (use.get(key(x, y)) || 0) + 1); }
+  const nextOf = new Map(); // demi-arêtes de bord réelles (canonique vue une seule fois)
+  for (let t = 0; t < idx.length; t += 3) { const a = idx[t], b = idx[t + 1], c = idx[t + 2]; for (const [x, y] of [[a, b], [b, c], [c, a]]) { if (rep[x] === rep[y]) continue; if (use.get(key(rep[x], rep[y])) === 1) { let l = nextOf.get(x); if (!l) { l = []; nextOf.set(x, l); } l.push(y); } } }
   const loops = [], seen = new Set();
   for (const [start] of nextOf) {
     if (seen.has(start)) continue;
@@ -53,7 +65,7 @@ function isSimplePolygon(px, py, n) {
 // Retourne une NOUVELLE géométrie (normales recalculées), ou geometry si pas de bord.
 export function fillLoopsCDT(geometry, detail = 10) {
   const idx0 = geometry.index.array;
-  const loops = boundaryLoops(idx0);
+  const loops = boundaryLoops(idx0, geometry.attributes.position.array);
   if (!loops.length) return geometry;
   const attrs = ATTRS.filter((a) => geometry.attributes[a]);
   const src = {}; for (const a of attrs) src[a] = geometry.attributes[a].array;

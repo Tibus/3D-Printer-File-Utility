@@ -686,23 +686,30 @@ document.getElementById('hollow-btn').addEventListener('click', async () => {
   } catch (err) { console.error(err); setStatus(`Évidement : ${err.message}`); }
   finally { const wait = Math.max(0, 300 - (performance.now() - startedAt)); setTimeout(() => showLoading(false), wait); }
 });
-document.getElementById('repair-btn').addEventListener('click', () => {
+document.getElementById('repair-btn').addEventListener('click', async () => {
   const mesh = state.targetMesh;
   if (!mesh) { setStatus('Aucun objet à réparer.'); return; }
   if (isGizmoActive()) deactivateGizmo();
+  showLoading(true, 'Réparation…');
+  const startedAt = performance.now();
+  await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
   try {
-    const { geometry, stats } = repairMesh(mesh.geometry, { detail: state.params.cutDetail });
+    const { geometry, stats } = await repairMesh(mesh.geometry, { detail: state.params.cutDetail });
     const newMesh = createObject(geometry, baseMatOf(mesh).clone(), mesh.name);
     newMesh.position.copy(mesh.position); newMesh.updateMatrixWorld(true);
     const old = mesh;
     detachObject(old); setActiveObject(newMesh); renderObjectList();
-    setStatus(`Réparé — soudés ${stats.welded.toLocaleString()}, îlots retirés ${stats.removedIslands}, trous bouchés ${stats.filledHoles}`);
+    const msg = stats.method === 'manifold'
+      ? `Réparé (Manifold) — ${stats.verts.toLocaleString()} sommets, genus ${stats.genus}`
+      : `Réparé (legacy) — soudés ${stats.welded.toLocaleString()}, îlots ${stats.removedIslands}, trous ${stats.filledHoles}`;
+    setStatus(msg);
     pushAction(
       () => { detachObject(newMesh); attachObject(old); setActiveObject(old); renderObjectList(); },
       () => { detachObject(old); attachObject(newMesh); setActiveObject(newMesh); renderObjectList(); },
       () => { for (const m of [old, newMesh]) if (!state.objects.includes(m)) disposeObject(m); },
     );
   } catch (err) { console.error(err); setStatus(`Réparation : ${err.message}`); }
+  finally { const wait = Math.max(0, 300 - (performance.now() - startedAt)); setTimeout(() => showLoading(false), wait); }
 });
 document.getElementById('bool-union').addEventListener('click', () => runBoolean('union'));
 document.getElementById('bool-subtract').addEventListener('click', () => runBoolean('subtract'));
