@@ -36,6 +36,24 @@ import { makeSquareAlpha, makeRoundAlpha, loadAlphaFromImage, renderAlphaPreview
 // Matériau RÉEL d'un objet (indépendant du mode d'affichage matcap/uni).
 const baseMatOf = (m) => m.userData.baseMat || m.material;
 
+// Clignotement d'alpha d'un mesh sur ~0,5 s (feedback visuel, ex. après un split) : on
+// clone son matériau, on fait varier l'opacité 1 -> ~0.15 -> 1, puis on restaure.
+function flashMesh(mesh, dur = 500) {
+  if (!mesh || !mesh.material) return;
+  const original = mesh.material;
+  const anim = original.clone();
+  anim.transparent = true; anim.depthWrite = false;
+  mesh.material = anim;
+  const start = performance.now();
+  const tick = () => {
+    const t = Math.min(1, (performance.now() - start) / dur);
+    anim.opacity = 1 - 0.85 * Math.sin(t * Math.PI); // 1 -> 0.15 -> 1
+    if (t < 1) requestAnimationFrame(tick);
+    else { if (mesh.material === anim) mesh.material = original; anim.dispose(); }
+  };
+  requestAnimationFrame(tick);
+}
+
 initScene();
 initGizmo();
 warmupManifold(); // précharge le WASM du booléen (mode de découpe par défaut)
@@ -182,6 +200,7 @@ function performSplit() {
       detachObject(mesh); // garde l'original pour l'undo (pas de dispose)
       setActiveObject(outMesh);
       renderObjectList();
+      flashMesh(inMesh); // clignotement d'alpha sur la pièce découpée (feedback visuel)
       setStatus('Split effectué (2 objets).');
       pushAction(
         () => { detachObject(inMesh); detachObject(outMesh); attachObject(mesh); setActiveObject(mesh); renderObjectList(); },
