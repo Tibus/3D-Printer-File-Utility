@@ -27,6 +27,28 @@ function boundaryLoops(idx) {
   return loops;
 }
 
+// Le polygone 2D (px,py sur n sommets) est-il simple (aucune paire d'arêtes NON adjacentes
+// ne se croise) ? Si oui, le CDT contraint est fiable même si le bord 3D n'est pas plan
+// (on obtient juste un cap ~plat). Le CDT ne s'effondre que si la projection s'auto-intersecte.
+function isSimplePolygon(px, py, n) {
+  if (n < 4) return true;
+  const orient = (ax, ay, bx, by, cx, cy) => { const v = (by - ay) * (cx - bx) - (bx - ax) * (cy - by); return v > 1e-12 ? 1 : (v < -1e-12 ? -1 : 0); };
+  const cross = (ax, ay, bx, by, cx, cy, dx, dy) => {
+    const o1 = orient(ax, ay, bx, by, cx, cy), o2 = orient(ax, ay, bx, by, dx, dy);
+    const o3 = orient(cx, cy, dx, dy, ax, ay), o4 = orient(cx, cy, dx, dy, bx, by);
+    return o1 !== o2 && o3 !== o4 && o1 && o2 && o3 && o4; // croisement propre (pas simple contact)
+  };
+  for (let i = 0; i < n; i++) {
+    const i2 = (i + 1) % n;
+    for (let j = i + 1; j < n; j++) {
+      const j2 = (j + 1) % n;
+      if (i2 === j || i === j2 || i2 === j2) continue; // arêtes adjacentes -> ignorer
+      if (cross(px[i], py[i], px[i2], py[i2], px[j], py[j], px[j2], py[j2])) return false;
+    }
+  }
+  return true;
+}
+
 // Bouche toutes les boucles de bord de geometry par CDT + grille interne (densité detail).
 // Retourne une NOUVELLE géométrie (normales recalculées), ou geometry si pas de bord.
 export function fillLoopsCDT(geometry, detail = 10) {
@@ -45,6 +67,8 @@ export function fillLoopsCDT(geometry, detail = 10) {
   // centre global (pour orienter les caps vers l'extérieur)
   geometry.computeBoundingBox();
   const bc = new THREE.Vector3(); geometry.boundingBox.getCenter(bc);
+
+  let cdtCount = 0, fanCount = 0; // stats (CDT grillé vs éventail concentrique)
 
   // Nombre d'anneaux radiaux du cap éventail (densité SCULPTABLE réglée par detail).
   const capRings = Math.max(1, Math.min(20, Math.round(detail / 2)));
@@ -97,13 +121,10 @@ export function fillLoopsCDT(geometry, detail = 10) {
 
     // orientation : normale du cap doit pointer vers l'extérieur (loin du centre global)
     const outward = ((cx - bc.x) * nx + (cy - bc.y) * ny + (cz - bc.z) * nz) >= 0;
-    // Planarité : le CDT planaire est lent et produit un cap en miettes quand le bord n'est
-    // pas ~plan (ex. coupe courbe d'un masque sur une sphère -> polygone 2D auto-intersectant).
-    // Dans ce cas (ou boucle très longue) -> éventail 3D rapide et robuste.
-    let maxDev = 0;
-    for (const v of loop) { const dx = pos[v * 3] - cx, dy = pos[v * 3 + 1] - cy, dz = pos[v * 3 + 2] - cz; const d = Math.abs(dx * nx + dy * ny + dz * nz); if (d > maxDev) maxDev = d; }
-    const extent = Math.max(x1 - x0, y1 - y0) || 1;
-    if (maxDev > 0.18 * extent || n > 300) { fanLoop(loop, n, cx, cy, cz, outward); continue; }
+    // On garde le CDT (grille sculptable) dès que la projection 2D est SIMPLE — même si le
+    // bord n'est pas plan (on obtient un cap plat, ce qui convient). Éventail 3D uniquement
+    // pour les bords repliés (projection auto-intersectante) ou les boucles très longues.
+    if (n > 400 || !isSimplePolygon(px, py, n)) { fanLoop(loop, n, cx, cy, cz, outward); fanCount++; continue; }
 
     const localGlobal = loop.slice(); // local < n -> global existant ; interne -> nouveau
     const step = (Math.max(x1 - x0, y1 - y0) || 1) / Math.max(2, detail | 0);
@@ -127,6 +148,7 @@ export function fillLoopsCDT(geometry, detail = 10) {
     } catch (_) { tris = null; }
 
     if (tris) {
+      cdtCount++;
       // suivi de couverture des arêtes de bord (local i -> i+1) : chaque arête du contour
       // doit être portée par exactement un triangle du cap, sinon -> trou.
       const ekey = (x, y) => (x < y ? x * 1e7 + y : y * 1e7 + x);
@@ -158,7 +180,7 @@ export function fillLoopsCDT(geometry, detail = 10) {
         if (outward) outIdx.push(gq, gp, cvIdx); else outIdx.push(gp, gq, cvIdx);
       }
     } else {
-      fanLoop(loop, n, cx, cy, cz, outward); // repli si le CDT a levé une exception
+      fanLoop(loop, n, cx, cy, cz, outward); fanCount++; // repli si le CDT a levé une exception
     }
   }
 
@@ -171,5 +193,6 @@ export function fillLoopsCDT(geometry, detail = 10) {
   // restaure les normales d'origine du corps (les nouveaux sommets de cap gardent le recalcul).
   if (srcNormal) { const na = g.attributes.normal.array; const n0 = Math.min(srcNormal.length, V0 * 3); for (let i = 0; i < n0; i++) na[i] = srcNormal[i]; g.attributes.normal.needsUpdate = true; }
   g.userData._filledHoles = loops.length;
+  g.userData._capCDT = cdtCount; g.userData._capFan = fanCount;
   return g;
 }

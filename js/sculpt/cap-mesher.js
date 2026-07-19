@@ -24,17 +24,18 @@ export function delaunay(px, py, n) {
   };
   let tris = [[n, n + 1, n + 2, circum(n, n + 1, n + 2)]];
   const order = Array.from({ length: n }, (_, i) => i).sort((i, j) => px[i] - px[j]);
+  const KEY = n + 3; // borne des indices -> clé d'arête dirigée sans collision
   for (const p of order) {
     const bad = [];
     for (let t = 0; t < tris.length; t++) { const c = tris[t][3]; if (c && (SX[p] - c.ux) ** 2 + (SY[p] - c.uy) ** 2 < c.r2 + 1e-9) bad.push(t); }
+    // Frontière du trou = arêtes dirigées dont l'inverse n'apparaît pas. Détection par table
+    // de hachage O(edges) — l'ancienne version O(edges²) explosait (hang) sur les bords
+    // quasi-colinéaires où presque tous les triangles deviennent « mauvais ».
     const edges = [];
-    for (const t of bad) { const [a, b, c] = tris[t]; edges.push([a, b], [b, c], [c, a]); }
+    const seen = new Set();
+    for (const t of bad) { const [a, b, c] = tris[t]; for (const [x, y] of [[a, b], [b, c], [c, a]]) { edges.push([x, y]); seen.add(x * KEY + y); } }
     const boundary = [];
-    for (let i = 0; i < edges.length; i++) {
-      let shared = false;
-      for (let j = 0; j < edges.length; j++) { if (i !== j && edges[i][0] === edges[j][1] && edges[i][1] === edges[j][0]) { shared = true; break; } }
-      if (!shared) boundary.push(edges[i]);
-    }
+    for (const [x, y] of edges) { if (!seen.has(y * KEY + x)) boundary.push([x, y]); }
     for (let k = bad.length - 1; k >= 0; k--) { const t = bad[k]; tris[t] = tris[tris.length - 1]; tris.pop(); }
     for (const [a, b] of boundary) tris.push([a, b, p, circum(a, b, p)]);
   }
@@ -69,7 +70,9 @@ export function constrainEdges(T, PX, PY, constraints, stats) {
   const other = (k, t) => { const l = E.get(k); if (!l || l.length < 2) return -1; return l[0] === t ? l[1] : l[0]; };
   const third = (t, a, b) => { const [x, y, z] = T[t]; return (x !== a && x !== b) ? x : (y !== a && y !== b) ? y : z; };
 
-  let failed = 0;
+  let failed = 0, work = 0;
+  const BUDGET = 40000; // budget global de flips : un bord dégénéré fait livelocker les flips
+  //  (des dizaines de M d'itérations = hang). Au-delà -> throw => repli éventail dans cap-loop.
   for (const [u, v] of constraints) {
     if (u === v || E.has(key(u, v))) continue;
     let start = -1, ex = -1, ey = -1;
@@ -78,6 +81,7 @@ export function constrainEdges(T, PX, PY, constraints, stats) {
     if (start < 0) { failed++; stats.fStart++; continue; }
     const queue = []; let cur = start, g = 0, hitHull = false;
     while (g++ < 100000) {
+      if (++work > BUDGET) throw new Error('constrainEdges: budget dépassé (bord dégénéré)');
       queue.push([ex, ey]);
       const nt = other(key(ex, ey), cur); if (nt < 0) { hitHull = true; break; }
       const w = third(nt, ex, ey); if (w === v) break;
@@ -87,6 +91,7 @@ export function constrainEdges(T, PX, PY, constraints, stats) {
     if (hitHull) stats.fWalk++;
     let gg = 0;
     while (queue.length && gg++ < 200000) {
+      if (++work > BUDGET) throw new Error('constrainEdges: budget dépassé (bord dégénéré)');
       const e = queue.shift(); const k = key(e[0], e[1]);
       const l = E.get(k); if (!l || l.length < 2) continue;
       const t0 = l[0], t1 = l[1];
@@ -193,7 +198,9 @@ export function retopoMesh(a) {
     else { if (ghostOf[u] >= 0) cons.push([ghostOf[u], v]); if (ghostOf[v] >= 0) cons.push([u, ghostOf[v]]); } // couture via fantômes
   }
   const cstats = {};
-  const failed = constrainEdges(T, DX, DY, cons, cstats);
+  let failed = 0;
+  try { failed = constrainEdges(T, DX, DY, cons, cstats); }
+  catch (_) { failed = cons.length; } // bord dégénéré (budget dépassé) : on garde la triangulation brute
 
   const spanMax = L * sScale * 0.5;
   const seen = new Set(), out = [];
