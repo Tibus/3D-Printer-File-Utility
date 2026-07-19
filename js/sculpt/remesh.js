@@ -10,7 +10,7 @@ import { getManifold } from './split-manifold.js';
 
 const _p = new THREE.Vector3();
 const _A = new THREE.Vector3(), _B = new THREE.Vector3(), _C = new THREE.Vector3();
-const _ab = new THREE.Vector3(), _ac = new THREE.Vector3(), _n = new THREE.Vector3();
+const _ab = new THREE.Vector3(), _ac = new THREE.Vector3();
 
 // Coordonnées barycentriques de P dans le triangle ABC.
 function bary(P, A, B, C, out) {
@@ -51,6 +51,40 @@ export function reprojectAttrs(newGeom, srcGeom) {
   if (ncol) newGeom.setAttribute('color', new THREE.BufferAttribute(ncol, 3));
 }
 
+// Angle intérieur au sommet P (entre PQ et PR).
+function angleAt(pos, P, Q, R) {
+  const x1 = pos[Q * 3] - pos[P * 3], y1 = pos[Q * 3 + 1] - pos[P * 3 + 1], z1 = pos[Q * 3 + 2] - pos[P * 3 + 2];
+  const x2 = pos[R * 3] - pos[P * 3], y2 = pos[R * 3 + 1] - pos[P * 3 + 1], z2 = pos[R * 3 + 2] - pos[P * 3 + 2];
+  const l1 = Math.hypot(x1, y1, z1) || 1e-20, l2 = Math.hypot(x2, y2, z2) || 1e-20;
+  let c = (x1 * x2 + y1 * y2 + z1 * z2) / (l1 * l2); if (c > 1) c = 1; else if (c < -1) c = -1;
+  return Math.acos(c);
+}
+
+// Pré-calcule les pseudo-normales (Bærentzen & Aanæs) : normale de face, pseudo-normale
+// de sommet (pondérée par l'angle) et pseudo-normale d'arête (somme des 2 faces). Elles
+// donnent le BON signe même quand le point le plus proche tombe sur une arête/sommet
+// (cas fréquents hors du maillage), là où la normale de face brute se trompe -> supprime
+// les surfaces fantômes du remesh. Non normalisées (seul le signe du produit scalaire compte).
+function buildPseudoNormals(pos, index) {
+  const F = index.length / 3, Vn = pos.length / 3;
+  const faceN = new Float32Array(F * 3), vertN = new Float32Array(Vn * 3);
+  const edgeN = new Map(); const ekey = (u, v) => (u < v ? u * Vn + v : v * Vn + u);
+  const A = new THREE.Vector3(), B = new THREE.Vector3(), C = new THREE.Vector3(), ab = new THREE.Vector3(), ac = new THREE.Vector3(), nn = new THREE.Vector3();
+  for (let f = 0; f < F; f++) {
+    const a = index[f * 3], b = index[f * 3 + 1], c = index[f * 3 + 2];
+    A.fromArray(pos, a * 3); B.fromArray(pos, b * 3); C.fromArray(pos, c * 3);
+    ab.subVectors(B, A); ac.subVectors(C, A); nn.crossVectors(ab, ac);
+    const l = nn.length() || 1e-20; nn.multiplyScalar(1 / l);
+    faceN[f * 3] = nn.x; faceN[f * 3 + 1] = nn.y; faceN[f * 3 + 2] = nn.z;
+    const wa = angleAt(pos, a, b, c), wb = angleAt(pos, b, c, a), wc = angleAt(pos, c, a, b);
+    vertN[a * 3] += nn.x * wa; vertN[a * 3 + 1] += nn.y * wa; vertN[a * 3 + 2] += nn.z * wa;
+    vertN[b * 3] += nn.x * wb; vertN[b * 3 + 1] += nn.y * wb; vertN[b * 3 + 2] += nn.z * wb;
+    vertN[c * 3] += nn.x * wc; vertN[c * 3 + 1] += nn.y * wc; vertN[c * 3 + 2] += nn.z * wc;
+    for (const [u, v] of [[a, b], [b, c], [c, a]]) { const k = ekey(u, v); let e = edgeN.get(k); if (!e) { e = [0, 0, 0]; edgeN.set(k, e); } e[0] += nn.x; e[1] += nn.y; e[2] += nn.z; }
+  }
+  return { faceN, vertN, edgeN, ekey };
+}
+
 // Construit la fonction SDF (distance signée : positif dedans, négatif dehors, via BVH)
 // + les bornes et l'edgeLength pour Manifold.levelSet. Partagé remesh / évidement.
 export function buildSDF(geometry, resolution) {
@@ -64,15 +98,26 @@ export function buildSDF(geometry, resolution) {
   const bounds = { min: [bb.min.x - pad, bb.min.y - pad, bb.min.z - pad], max: [bb.max.x + pad, bb.max.y + pad, bb.max.z + pad] };
   const edgeLength = maxDim / Math.max(8, resolution | 0);
   const pos = geometry.attributes.position.array, index = geometry.index.array;
-  const target = {};
+  const { faceN, vertN, edgeN, ekey } = buildPseudoNormals(pos, index);
+  const target = {}, bc = [0, 0, 0];
+  const EPS = 1e-4;
   const sdf = (point) => {
     _p.set(point[0], point[1], point[2]);
     const hit = geometry.boundsTree.closestPointToPoint(_p, target);
     if (!hit) return -1e6;
     const fi = hit.faceIndex, a = index[fi * 3], b = index[fi * 3 + 1], c = index[fi * 3 + 2];
     _A.fromArray(pos, a * 3); _B.fromArray(pos, b * 3); _C.fromArray(pos, c * 3);
-    _ab.subVectors(_B, _A); _ac.subVectors(_C, _A); _n.crossVectors(_ab, _ac);
-    const dot = (_p.x - hit.point.x) * _n.x + (_p.y - hit.point.y) * _n.y + (_p.z - hit.point.z) * _n.z;
+    // choix de la pseudo-normale selon l'élément le plus proche (face / arête / sommet)
+    bary(hit.point, _A, _B, _C, bc);
+    let nx, ny, nz;
+    if (bc[0] > 1 - EPS) { nx = vertN[a * 3]; ny = vertN[a * 3 + 1]; nz = vertN[a * 3 + 2]; }
+    else if (bc[1] > 1 - EPS) { nx = vertN[b * 3]; ny = vertN[b * 3 + 1]; nz = vertN[b * 3 + 2]; }
+    else if (bc[2] > 1 - EPS) { nx = vertN[c * 3]; ny = vertN[c * 3 + 1]; nz = vertN[c * 3 + 2]; }
+    else if (bc[0] < EPS) { const e = edgeN.get(ekey(b, c)); nx = e[0]; ny = e[1]; nz = e[2]; }
+    else if (bc[1] < EPS) { const e = edgeN.get(ekey(a, c)); nx = e[0]; ny = e[1]; nz = e[2]; }
+    else if (bc[2] < EPS) { const e = edgeN.get(ekey(a, b)); nx = e[0]; ny = e[1]; nz = e[2]; }
+    else { nx = faceN[fi * 3]; ny = faceN[fi * 3 + 1]; nz = faceN[fi * 3 + 2]; }
+    const dot = (_p.x - hit.point.x) * nx + (_p.y - hit.point.y) * ny + (_p.z - hit.point.z) * nz;
     return dot >= 0 ? -hit.distance : hit.distance; // dehors -> négatif, dedans -> positif
   };
   return { sdf, bounds, edgeLength, maxDim };
