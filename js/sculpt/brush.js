@@ -366,20 +366,22 @@ function applyFastStroke(pos, nor, tool, size, intensity, invert, neighbors, mas
       accBuf[v] = acc + s; accStamp[v] = accId;
       x += infNor[v3] * s; y += infNor[v3 + 1] * s; z += infNor[v3 + 2] * s;
     } else if (tool === 'pinch') {
-      // rapproche les sommets du centre du brush, PLAFONNÉ (asymptotique) pour ne pas s'effondrer
-      // en pointe sur un stroke lent. invert = écarte. acc = distance déjà pincée.
+      // rapproche les sommets du centre, PLAFONNÉ (asymptotique) + falloff DURCI (f³) pour un pincement
+      // concentré au centre (les triangles lointains sont très peu tirés, façon Nomad). invert = écarte.
+      const fp = f * f * f;
       const acc = accStamp[v] === accId ? accBuf[v] : 0;
       const room = 1 / (1 + acc / (size * 0.3));
-      const w = f * strength * PINCH_STR * sign * room;
+      const w = fp * strength * PINCH_STR * sign * room;
       const mx = (lcx - x) * w, my = (lcy - y) * w, mz = (lcz - z) * w;
       accBuf[v] = acc + Math.sqrt(mx * mx + my * my + mz * mz); accStamp[v] = accId;
       x += mx; y += my; z += mz;
     } else if (tool === 'crease') {
-      // pincement vers le centre + déplacement le long de la normale moyenne (crête), plafonnés
+      // pincement concentré (f³) vers le centre + déplacement normal (crête), plafonnés
+      const fp = f * f * f;
       const acc = accStamp[v] === accId ? accBuf[v] : 0;
       const room = 1 / (1 + acc / (size * 0.3));
-      const wp = f * strength * PINCH_STR * room;
-      const s = maxOffset * f * sign * room;
+      const wp = fp * strength * PINCH_STR * room;
+      const s = maxOffset * fp * sign * room;
       const mx = (lcx - x) * wp + nx * s, my = (lcy - y) * wp + ny * s, mz = (lcz - z) * wp + nz * s;
       accBuf[v] = acc + Math.sqrt(mx * mx + my * my + mz * mz); accStamp[v] = accId;
       x += mx; y += my; z += mz;
@@ -500,17 +502,19 @@ function applySeamStroke(pos, nor, tool, size, intensity, invert, mask) {
       accBuf[r] = acc + s; accStamp[r] = accId;
       x += infNor[v3] * s; y += infNor[v3 + 1] * s; z += infNor[v3 + 2] * s;
     } else if (tool === 'pinch') {
+      const fp = f * f * f;
       const acc = accStamp[r] === accId ? accBuf[r] : 0;
       const room = 1 / (1 + acc / (size * 0.3));
-      const w = f * strength * PINCH_STR * sign * room;
+      const w = fp * strength * PINCH_STR * sign * room;
       const mx = (lcx - x) * w, my = (lcy - y) * w, mz = (lcz - z) * w;
       accBuf[r] = acc + Math.sqrt(mx * mx + my * my + mz * mz); accStamp[r] = accId;
       x += mx; y += my; z += mz;
     } else if (tool === 'crease') {
+      const fp = f * f * f;
       const acc = accStamp[r] === accId ? accBuf[r] : 0;
       const room = 1 / (1 + acc / (size * 0.3));
-      const wp = f * strength * PINCH_STR * room;
-      const s = maxOffset * f * sign * room;
+      const wp = fp * strength * PINCH_STR * room;
+      const s = maxOffset * fp * sign * room;
       const mx = (lcx - x) * wp + nx * s, my = (lcy - y) * wp + ny * s, mz = (lcz - z) * wp + nz * s;
       accBuf[r] = acc + Math.sqrt(mx * mx + my * my + mz * mz); accStamp[r] = accId;
       x += mx; y += my; z += mz;
