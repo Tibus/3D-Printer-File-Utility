@@ -566,6 +566,17 @@ function toRetexCanvas(src) {
   c.getContext('2d').drawImage(src, 0, 0, RETEX_SIZE, RETEX_SIZE);
   return c;
 }
+// Érode l'alpha de `src` (silhouette) de r pixels -> canvas w×h. Astuce : destination-in avec des
+// copies décalées dans 8 directions = on ne garde que les pixels dont le voisinage est opaque.
+function erodeMaskCanvas(src, r, w, h) {
+  const out = document.createElement('canvas'); out.width = w; out.height = h;
+  const c = out.getContext('2d');
+  c.drawImage(src, 0, 0, w, h);
+  c.globalCompositeOperation = 'destination-in';
+  for (const [dx, dy] of [[r, 0], [-r, 0], [0, r], [0, -r], [r, r], [-r, -r], [r, -r], [-r, r]]) c.drawImage(src, dx, dy, w, h);
+  c.globalCompositeOperation = 'source-over';
+  return out;
+}
 function retexLayersOf(mesh) {
   if (!mesh.userData._retexLayers) {
     mesh.userData._retexLayers = [];
@@ -773,14 +784,21 @@ document.getElementById('retex-generate').addEventListener('click', async () => 
     const outUrl = await generateNanoBanana(capUrl, prompt, key); // image éditée (dataURL)
     const loadURL = (u) => new Promise((res, rej) => { const im = new Image(); im.onload = () => res(im); im.onerror = () => rej(new Error('image illisible')); im.src = u; });
     const [aiImg, capImg] = await Promise.all([loadURL(outUrl), loadURL(capUrl)]);
-    // Fond transparent GARANTI : on découpe le retour de l'IA avec l'alpha de la capture (= silhouette
-    // de l'objet). L'IA garde la silhouette pixel-perfect (prompt système) -> cutout propre, sans fond
-    // inventé ni bleed de bord à la reprojection. Nano Banana ne sait pas rendre d'alpha lui-même.
-    const img = document.createElement('canvas');
-    img.width = aiImg.naturalWidth || aiImg.width; img.height = aiImg.naturalHeight || aiImg.height;
-    { const c = img.getContext('2d'); c.drawImage(aiImg, 0, 0); c.globalCompositeOperation = 'destination-in'; c.drawImage(capImg, 0, 0, img.width, img.height); c.globalCompositeOperation = 'source-over'; }
+    const dbg = document.getElementById('retex-debug').checked;
+    const dl = (href, name) => { const a = document.createElement('a'); a.href = href; a.download = name; a.click(); };
+    if (dbg) { dl(capUrl, 'debug-1-capture.png'); dl(outUrl, 'debug-2-ia-brut.png'); }
+    // Fond transparent GARANTI : on découpe le retour de l'IA avec la silhouette de la capture, ÉRODÉE
+    // de quelques pixels. L'IA rend souvent un fond clair qui bave sur le bord anti-aliasé de la
+    // silhouette (liseré blanc) ; en érodant on ne garde que l'intérieur franc, et l'edge-padding de
+    // la reprojection réétend la couleur vers le bord/coutures. Nano Banana ne sait pas rendre d'alpha.
+    const w = aiImg.naturalWidth || aiImg.width, h = aiImg.naturalHeight || aiImg.height;
+    const mask = erodeMaskCanvas(capImg, 2, w, h);
+    const img = document.createElement('canvas'); img.width = w; img.height = h;
+    { const c = img.getContext('2d'); c.drawImage(aiImg, 0, 0); c.globalCompositeOperation = 'destination-in'; c.drawImage(mask, 0, 0); c.globalCompositeOperation = 'source-over'; }
+    if (dbg) dl(img.toDataURL('image/png'), 'debug-3-detoure.png');
     const layers = retexLayersOf(mesh);
     const canvas = reprojectToUV(img, mesh, RETEX_SIZE);
+    if (dbg) dl(canvas.toDataURL('image/png'), 'debug-4-bake-uv.png');
     const newLayer = { name: 'IA: ' + prompt.slice(0, 14), canvas, thumb: img, opacity: 1, visible: true };
     if (_retexPendingMask && _retexPendingMask.mask) { newLayer.mask = _retexPendingMask.mask; newLayer._maskRT = _retexPendingMask._maskRT; _retexPendingMask = null; _retexMaskMode = 'layer'; _retexSelLayer = newLayer; }
     layers.push(newLayer);
