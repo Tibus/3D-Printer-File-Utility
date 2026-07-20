@@ -720,6 +720,9 @@ dom.addEventListener('pointercancel', endRetexPaint);
   const keyInput = document.getElementById('retex-apikey');
   keyInput.value = localStorage.getItem('geminiApiKey') || '';
   keyInput.addEventListener('change', () => localStorage.setItem('geminiApiKey', keyInput.value.trim()));
+  const promptInput = document.getElementById('retex-prompt');
+  promptInput.value = localStorage.getItem('nanoPrompt') || '';
+  promptInput.addEventListener('input', () => localStorage.setItem('nanoPrompt', promptInput.value));
 }
 document.getElementById('retex-generate').addEventListener('click', async () => {
   const mesh = state.targetMesh; if (!mesh) { setStatus('Aucun objet.'); return; }
