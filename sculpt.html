@@ -43,6 +43,16 @@
   <button id="new-scene-btn" class="control-btn" title="Vider la scène et repartir de zéro">🗑️ Nouvelle scène</button>
 
   <div id="status">Chargez un modèle pour commencer.</div>
+
+  <div class="obj-section">
+    <div class="obj-title">Objets</div>
+    <div id="object-list"></div>
+  </div>
+
+  <div class="obj-section" id="left-layers-section" style="display:none;">
+    <div class="obj-title">Calques (haut = dessus)</div>
+    <div id="retex-layers"></div>
+  </div>
 </div>
 
 <!-- Panneau droit : outils de sculpture -->
@@ -122,8 +132,6 @@
     <button id="retex-replace" class="control-btn" title="Remplacer la texture de base par une image UV uploadée">📤 Remplacer la texture</button>
     <button id="retex-pregen" class="control-btn" title="Peindre un masque AVANT import : il deviendra le masque du prochain calque importé">🎯 Masque pré-génération</button>
     <button id="retex-download" class="control-btn" title="Télécharger la texture composite (atlas UV) en PNG">💾 Télécharger la texture</button>
-    <div style="font-size:11.5px; color:#9a9ac0;">Calques (haut = dessus) :</div>
-    <div id="retex-layers" style="display:flex; flex-direction:column; gap:4px;"></div>
     <input type="file" id="retex-file" accept="image/*" style="display:none">
   </div>
 
@@ -265,11 +273,6 @@
       <input type="range" id="cutdetail-range" min="1" max="24" value="10" step="1">
       <span class="param-val" id="cutdetail-val">10</span>
     </label>
-  </div>
-
-  <div class="obj-section">
-    <div class="obj-title">Objets</div>
-    <div id="object-list"></div>
   </div>
 
   <div class="obj-section" id="bool-section" style="display:none;">

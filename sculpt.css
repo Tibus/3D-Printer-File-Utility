@@ -35,7 +35,9 @@ body.dragging {
     display: flex;
     flex-direction: column;
     gap: 10px;
-    max-width: 260px;
+    width: 300px;
+    max-height: calc(100vh - 40px);
+    overflow-y: auto;
 }
 
 .sculpt-back-link {
@@ -356,6 +358,14 @@ body.dragging {
     overflow-y: auto;
 }
 
+#retex-layers {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    max-height: 320px;
+    overflow-y: auto;
+}
+
 .obj-row {
     display: flex;
     align-items: center;
@@ -388,6 +398,29 @@ body.dragging {
     font-size: 13px;
     padding: 0 2px;
     opacity: 0.85;
+}
+
+/* Icônes (œil, masque, monter, supprimer) un peu plus grandes dans les calques */
+#retex-layers .obj-btn {
+    font-size: 17px;
+    padding: 0 3px;
+}
+
+/* Vignette du calque de retexture (photo IA / image source) */
+.retex-thumb {
+    width: 48px;
+    height: 48px;
+    flex: 0 0 48px;
+    border-radius: 4px;
+    border: 1px solid #33335a;
+    background: #12121e;
+    cursor: pointer;
+    object-fit: cover;
+    image-rendering: auto;
+}
+
+.retex-thumb:hover {
+    border-color: #22d3ee;
 }
 
 .obj-btn:hover {
