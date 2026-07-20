@@ -368,7 +368,9 @@ function applyFastStroke(pos, nor, tool, size, intensity, invert, neighbors, mas
     } else if (tool === 'pinch') {
       // rapproche les sommets du centre, PLAFONNÉ (asymptotique) + falloff TRÈS DURCI (f⁵) : pincement
       // très concentré au centre (les triangles lointains bougent à peine, façon Nomad). invert = écarte.
-      const f2 = f * f, fp = f2 * f2 * f;
+      // Rayon PROPRE au pinch, court : effet confiné à ~50% du rayon du brush, nul au-delà
+      // (les triangles lointains ne bougent plus). rr = distance normalisée (0 centre, 1 bord).
+      const t = rr * 2.0; if (t >= 1) continue; const fp = (1 - t) * (1 - t);
       const acc = accStamp[v] === accId ? accBuf[v] : 0;
       const room = 1 / (1 + acc / (size * 0.3));
       const w = fp * strength * PINCH_STR * sign * room;
@@ -385,8 +387,8 @@ function applyFastStroke(pos, nor, tool, size, intensity, invert, neighbors, mas
       accBuf[v] = acc + Math.sqrt(mx * mx + my * my + mz * mz); accStamp[v] = accId;
       x += mx; y += my; z += mz;
     } else if (tool === 'crease') {
-      // pincement concentré (f³) vers le centre + déplacement normal (crête), plafonnés
-      const fp = f * f * f;
+      // crête nette = déplacement normal (comme draw) + pincement, avec falloff POINTU et court
+      const t = rr * 2.0; if (t >= 1) continue; const fp = (1 - t) * (1 - t);
       const acc = accStamp[v] === accId ? accBuf[v] : 0;
       const room = 1 / (1 + acc / (size * 0.3));
       const wp = fp * strength * PINCH_STR * room;
@@ -511,7 +513,7 @@ function applySeamStroke(pos, nor, tool, size, intensity, invert, mask) {
       accBuf[r] = acc + s; accStamp[r] = accId;
       x += infNor[v3] * s; y += infNor[v3 + 1] * s; z += infNor[v3 + 2] * s;
     } else if (tool === 'pinch') {
-      const f2 = f * f, fp = f2 * f2 * f;
+      const t = rr * 2.0; if (t >= 1) return; const fp = (1 - t) * (1 - t);
       const acc = accStamp[r] === accId ? accBuf[r] : 0;
       const room = 1 / (1 + acc / (size * 0.3));
       const w = fp * strength * PINCH_STR * sign * room;
@@ -526,7 +528,7 @@ function applySeamStroke(pos, nor, tool, size, intensity, invert, mask) {
       accBuf[r] = acc + Math.sqrt(mx * mx + my * my + mz * mz); accStamp[r] = accId;
       x += mx; y += my; z += mz;
     } else if (tool === 'crease') {
-      const fp = f * f * f;
+      const t = rr * 2.0; if (t >= 1) return; const fp = (1 - t) * (1 - t);
       const acc = accStamp[r] === accId ? accBuf[r] : 0;
       const room = 1 / (1 + acc / (size * 0.3));
       const wp = fp * strength * PINCH_STR * room;
