@@ -130,7 +130,13 @@ const FRAG = `
     float fragEye = clip.w;                       // distance du point à la caméra
     float storedEye = texture2D(camDepth, suv).x; // distance de la surface visible
     if (storedEye > 0.0 && fragEye > storedEye + depthBias) discard; // caché derrière
-    gl_FragColor = texture2D(projImage, suv);
+    vec4 col = texture2D(projImage, suv);
+    // L'image projetée peut être détourée (alpha) : ses texels transparents sont RGB=0 (noir), donc
+    // le filtrage linéaire au bord de la silhouette mélange vers le noir -> liseré. On DÉ-PRÉMULTIPLIE
+    // (rgb/alpha) pour récupérer la vraie couleur, et on ignore le quasi-transparent (laissé à
+    // l'edge-padding). Sur une image opaque (alpha=1 partout), c'est neutre.
+    if (col.a < 0.02) discard;
+    gl_FragColor = vec4(col.rgb / col.a, 1.0);
   }
 `;
 // Dilatation (edge padding) : étale la couleur des texels peints dans le vide voisin, pour
