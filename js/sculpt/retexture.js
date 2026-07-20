@@ -428,7 +428,7 @@ export function paintMaskDab(mesh, layer, worldPoint, radius, hardness, strength
 // Lit la RT du masque -> canvas (alpha = révélation) pour le compositing.
 // La RT d'accumulation reste intacte : on dilate dans un ping-pong séparé avant la lecture
 // (sinon la dilatation se cumulerait et « gonflerait » le masque à chaque frame).
-export function readMaskCanvas(layer, texSize = 2048, mesh = null, pad = 4) {
+export function readMaskCanvas(layer, texSize = 2048, mesh = null, pad = 2) {
   if (!layer._maskRT) return null;
   const renderer = state.renderer;
   const cover = (pad > 0 && mesh) ? uvCoverage(mesh.geometry, texSize) : null;
