@@ -466,6 +466,33 @@ export function readMaskCanvas(layer, texSize = 2048, mesh = null, pad = 8) {
 
 export function disposeLayerMask(layer) { if (layer._maskRT) { layer._maskRT.dispose(); layer._maskRT = null; } layer.mask = null; }
 
+// Remplit tout le masque : reveal=true -> tout révélé (alpha 1), false -> tout masqué (alpha 0).
+export function setLayerMask(layer, texSize, reveal) {
+  ensureLayerMaskRT(layer, texSize, reveal);
+  const r = state.renderer, prev = r.getRenderTarget();
+  const pc = r.getClearColor(new THREE.Color()), pa = r.getClearAlpha();
+  r.setRenderTarget(layer._maskRT);
+  r.setClearColor(reveal ? 0xffffff : 0x000000, reveal ? 1 : 0); r.clear();
+  r.setRenderTarget(prev); r.setClearColor(pc, pa);
+}
+
+// Inverse le masque (révélé <-> masqué). Rend 1-alpha dans une nouvelle RT puis l'échange.
+export function invertLayerMask(layer, texSize) {
+  ensureLayerMaskRT(layer, texSize, true); // pas de masque = considéré tout révélé
+  const r = state.renderer;
+  const tmp = new THREE.WebGLRenderTarget(texSize, texSize); tmp.texture.colorSpace = THREE.NoColorSpace;
+  const mat = new THREE.ShaderMaterial({
+    uniforms: { tex: { value: layer._maskRT.texture } }, vertexShader: FS_VERT,
+    fragmentShader: 'precision highp float; uniform sampler2D tex; varying vec2 vUv; void main(){ float a = 1.0 - texture2D(tex, vUv).a; gl_FragColor = vec4(a); }',
+  });
+  const scn = new THREE.Scene(); const q = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), mat); scn.add(q);
+  const prev = r.getRenderTarget(), pac = r.autoClear; r.autoClear = true;
+  r.setRenderTarget(tmp); r.render(scn, new THREE.Camera());
+  r.setRenderTarget(prev); r.autoClear = pac;
+  mat.dispose(); q.geometry.dispose();
+  layer._maskRT.dispose(); layer._maskRT = tmp;
+}
+
 // ---------- Nano Banana (Gemini 2.5 Flash Image) : édition d'image par prompt ----------
 // BYOK : la clé est celle de l'utilisateur (jamais stockée côté serveur). Appel direct
 // à l'API Gemini depuis le navigateur (CORS OK). Renvoie un dataURL de l'image éditée.
@@ -476,6 +503,7 @@ const NANO_SYSTEM = [
   'CRITICAL: keep the EXACT same silhouette, geometry, pose, camera framing and composition as the input image — do not move, rotate, rescale, crop or reframe anything. The output must align pixel-for-pixel with the input so it can be reprojected onto the model.',
   'Only change the appearance as requested. Keep it flat/even lighting, no added shadows, highlights or background.',
   'Return a single edited image, same resolution and framing as the input.',
+  'Here is the request of the user : ',
 ].join(' ');
 export async function generateNanoBanana(imageDataURL, prompt, apiKey, model = NANO_MODEL) {
   const b64 = imageDataURL.split(',')[1];

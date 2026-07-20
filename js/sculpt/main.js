@@ -26,7 +26,7 @@ import { autoOrient } from './orient.js';
 import { decimateMesh } from './decimate.js';
 import { applyDisplayMode } from './display.js';
 import { saveScene, loadScene, clearScene } from './autosave.js';
-import { captureView, reprojectToUV, compositeLayers, applyTextureCanvas, hasPendingCam, captureSquareSidePx, paintMaskDab, readMaskCanvas, disposeLayerMask, generateNanoBanana } from './retexture.js';
+import { captureView, reprojectToUV, compositeLayers, applyTextureCanvas, hasPendingCam, captureSquareSidePx, paintMaskDab, readMaskCanvas, disposeLayerMask, setLayerMask, invertLayerMask, generateNanoBanana } from './retexture.js';
 import { splitByMask } from './split-mask.js';
 import { pushGeom, pushAction, pushMask, undo, redo, setHistoryListener } from './history.js';
 import { initGizmo, activateGizmo, deactivateGizmo, setAltPivot, isGizmoActive } from './gizmo.js';
@@ -605,6 +605,29 @@ function recomposeRetex(withHilite = true) {
 function loadImageFile(file) {
   return new Promise((res, rej) => { const url = URL.createObjectURL(file); const im = new Image(); im.onload = () => { URL.revokeObjectURL(url); res(im); }; im.onerror = rej; im.src = url; });
 }
+// Menu contextuel des opérations de masque d'un calque (clic droit sur la ligne / la vignette masque).
+let _maskMenuAway = null;
+function closeMaskMenu() {
+  const m = document.getElementById('retex-mask-menu'); if (m) m.remove();
+  if (_maskMenuAway) { document.removeEventListener('pointerdown', _maskMenuAway); _maskMenuAway = null; }
+}
+function showMaskMenu(x, y, layer) {
+  closeMaskMenu();
+  const mesh = state.targetMesh; if (!mesh) return;
+  const menu = document.createElement('div'); menu.id = 'retex-mask-menu'; menu.className = 'ctx-menu';
+  const refresh = () => { readMaskCanvas(layer, RETEX_SIZE, mesh); recomposeRetex(); renderRetexLayers(); };
+  const item = (label, fn) => { const b = document.createElement('button'); b.className = 'ctx-item'; b.textContent = label; b.onclick = () => { fn(); closeMaskMenu(); }; menu.appendChild(b); };
+  item('🎭 Masque plein (tout révélé)', () => { setLayerMask(layer, RETEX_SIZE, true); refresh(); });
+  item('⬛ Masque vide (tout masqué)', () => { setLayerMask(layer, RETEX_SIZE, false); refresh(); });
+  item('🔄 Inverser le masque', () => { invertLayerMask(layer, RETEX_SIZE); refresh(); });
+  item('🗑 Supprimer le masque', () => { disposeLayerMask(layer); recomposeRetex(); renderRetexLayers(); });
+  document.body.appendChild(menu);
+  const rect = menu.getBoundingClientRect();
+  menu.style.left = Math.max(4, Math.min(x, window.innerWidth - rect.width - 8)) + 'px';
+  menu.style.top = Math.max(4, Math.min(y, window.innerHeight - rect.height - 8)) + 'px';
+  _maskMenuAway = (e) => { if (!menu.contains(e.target)) closeMaskMenu(); };
+  setTimeout(() => document.addEventListener('pointerdown', _maskMenuAway), 0);
+}
 function renderRetexLayers() {
   const box = document.getElementById('retex-layers'); if (!box) return; box.innerHTML = '';
   updateRetexModeUI();
@@ -619,32 +642,36 @@ function renderRetexLayers() {
       recomposeRetex(); renderRetexLayers();
       setStatus(_retexSelLayer ? 'Masque de calque — peins sur l’objet pour révéler (Alt = effacer).' : 'Calque désélectionné.');
     };
-    // Vignette : photo IA / image source du calque (fallback : la texture UV composée)
-    const thumb = document.createElement('canvas'); thumb.width = thumb.height = 48; thumb.className = 'retex-thumb';
+    const openMenu = (e) => { e.preventDefault(); showMaskMenu(e.clientX, e.clientY, l); };
+    row.oncontextmenu = openMenu; // clic droit n'importe où sur la ligne -> menu masque
+    // Vignette photo : image source du calque (fallback : la texture UV composée)
+    const thumb = document.createElement('canvas'); thumb.width = thumb.height = 44; thumb.className = 'retex-thumb';
     thumb.title = 'Sélectionner (peins sur l’objet pour masquer/révéler ce calque)';
     { const tc = thumb.getContext('2d'); const src = l.thumb || l.canvas;
-      tc.fillStyle = '#12121e'; tc.fillRect(0, 0, 48, 48);
-      if (src) { try { tc.drawImage(src, 0, 0, 48, 48); } catch (_) {} } }
+      tc.fillStyle = '#12121e'; tc.fillRect(0, 0, 44, 44);
+      if (src) { try { tc.drawImage(src, 0, 0, 44, 44); } catch (_) {} } }
     thumb.onclick = select;
+    // Vignette masque (façon Photoshop) : blanc = révélé, noir = masqué ; gris clair = pas de masque
+    const mthumb = document.createElement('canvas'); mthumb.width = mthumb.height = 44; mthumb.className = 'retex-thumb retex-mask-thumb' + ((l._maskRT || l.mask) ? ' has-mask' : '');
+    mthumb.title = 'Masque du calque — clic droit pour les options (plein / vide / inverser…)';
+    { const mc = mthumb.getContext('2d');
+      if (l.mask) { mc.fillStyle = '#0a0a12'; mc.fillRect(0, 0, 44, 44); try { mc.drawImage(l.mask, 0, 0, 44, 44); } catch (_) {} }
+      else { mc.fillStyle = '#dcdce4'; mc.fillRect(0, 0, 44, 44); } } // pas de masque = tout révélé
+    mthumb.onclick = select;
+    mthumb.oncontextmenu = openMenu;
     const eye = document.createElement('button'); eye.className = 'obj-btn'; eye.textContent = l.visible ? '👁' : '🚫';
     eye.title = l.visible ? 'Masquer le calque' : 'Afficher le calque';
     eye.onclick = () => { l.visible = !l.visible; recomposeRetex(); renderRetexLayers(); };
-    // Icône de masque : présent (peint OU pré-généré) ou absent
-    const hasMask = !!(l._maskRT || l.mask);
-    const maskIco = document.createElement('span'); maskIco.className = 'obj-btn'; maskIco.textContent = hasMask ? '🎭' : '⬜';
-    maskIco.title = hasMask ? 'Ce calque a un masque' : 'Pas de masque (peins sur l’objet pour en créer un)';
-    maskIco.style.opacity = hasMask ? '1' : '0.35';
-    maskIco.onclick = select;
     const name = document.createElement('span'); name.className = 'obj-name'; name.textContent = l.name; name.style.fontSize = '11px'; name.style.cursor = 'pointer';
     name.title = 'Sélectionner (peins sur l’objet pour masquer/révéler ce calque)';
     name.onclick = select;
-    const op = document.createElement('input'); op.type = 'range'; op.min = 0; op.max = 100; op.value = Math.round((l.opacity ?? 1) * 100); op.style.width = '56px';
-    op.oninput = () => { l.opacity = op.value / 100; recomposeRetex(); };
+    const op = document.createElement('input'); op.type = 'range'; op.min = 0; op.max = 100; op.value = Math.round((l.opacity ?? 1) * 100); op.style.width = '48px';
+    op.title = 'Opacité'; op.oninput = () => { l.opacity = op.value / 100; recomposeRetex(); };
     const up = document.createElement('button'); up.className = 'obj-btn'; up.textContent = '↑'; up.title = 'Monter';
     up.onclick = () => { if (i < layers.length - 1) { const t = layers[i]; layers[i] = layers[i + 1]; layers[i + 1] = t; recomposeRetex(); renderRetexLayers(); } };
-    const del = document.createElement('button'); del.className = 'obj-btn'; del.textContent = '🗑'; del.title = 'Supprimer';
+    const del = document.createElement('button'); del.className = 'obj-btn'; del.textContent = '🗑'; del.title = 'Supprimer le calque';
     del.onclick = () => { if (_retexSelLayer === l) _retexSelLayer = null; disposeLayerMask(l); layers.splice(i, 1); recomposeRetex(); renderRetexLayers(); };
-    row.append(thumb, eye, maskIco, name, op, up, del);
+    row.append(thumb, mthumb, name, eye, op, up, del);
     box.appendChild(row);
   }
 }
