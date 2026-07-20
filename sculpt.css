@@ -89,6 +89,40 @@ body.dragging {
     color: #c9c9e6;
 }
 
+/* Toast de notification (bas-centre) : visible, auto-disparaît */
+#toast-wrap {
+    position: fixed;
+    left: 50%;
+    bottom: 28px;
+    transform: translateX(-50%);
+    z-index: 2000;
+    pointer-events: none;
+    display: flex;
+    justify-content: center;
+}
+
+.toast {
+    max-width: 60vw;
+    padding: 11px 18px;
+    background: rgba(26, 26, 46, 0.96);
+    color: #e6e6f0;
+    border: 1px solid #44446a;
+    border-radius: 10px;
+    font-size: 13px;
+    line-height: 1.4;
+    text-align: center;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+    backdrop-filter: blur(6px);
+    opacity: 0;
+    transform: translateY(12px);
+    transition: opacity 0.25s ease, transform 0.25s ease;
+}
+
+.toast.show {
+    opacity: 1;
+    transform: translateY(0);
+}
+
 /* ---------- Panneau outils (droite) ---------- */
 
 #tool-panel {

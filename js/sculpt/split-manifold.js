@@ -84,7 +84,7 @@ export async function lassoSplitManifold(geometry, lassoPx, camera, matrixWorld,
   const hasColor = !!geometry.attributes.color;
 
   let wasm;
-  try { wasm = await getManifold(); } catch (e) { console.warn('[manifold] chargement échoué -> fallback CSG', e); return { fallback: true }; }
+  try { wasm = await getManifold(); } catch (e) { console.warn('[manifold] chargement WASM échoué', e); return { fallback: true, reason: 'WASM Manifold non chargé (' + (e && e.message || e) + ')' }; }
   const { Manifold, Mesh } = wasm;
 
   const prismGeo = buildLassoPrism(geometry, lassoPx, camera, matrixWorld, vw, vh, detail, hasUV, hasColor);
@@ -95,15 +95,16 @@ export async function lassoSplitManifold(geometry, lassoPx, camera, matrixWorld,
     const prismMesh = toManifoldMesh(Mesh, prismGeo, null, hasUV, hasColor); prismMesh.merge();
     meshMan = new Manifold(meshMesh);
     prismMan = new Manifold(prismMesh);
-    // Entrée non manifold -> Manifold la rejette (0 triangle) -> fallback three-bvh-csg.
-    if (meshMan.numTri() === 0) { console.warn('[manifold] maillage non-manifold -> fallback CSG'); return { fallback: true }; }
+    // Entrée non manifold -> Manifold la rejette (0 triangle) -> fallback (l'appelant retombe sur CSG).
+    if (meshMan.numTri() === 0 || prismMan.numTri() === 0) return { fallback: true };
     inM = Manifold.intersection(meshMan, prismMan);
     outM = Manifold.difference(meshMan, prismMan);
     const inMesh = inM.getMesh(), outMesh = outM.getMesh();
     if (!inMesh.triVerts.length || !outMesh.triVerts.length) result = null; // rien séparé
     else result = { inside: fromManifoldMesh(inMesh, hasUV, hasColor), outside: fromManifoldMesh(outMesh, hasUV, hasColor), capMode: 'manifold' };
   } catch (e) {
-    console.warn('[manifold] booléen échoué -> fallback CSG', e);
+    // Booléen Manifold impossible (entrée non 2-manifold) -> fallback three-bvh-csg côté appelant.
+    console.warn('[manifold] booléen impossible -> fallback CSG', e && e.message);
     result = { fallback: true };
   } finally {
     for (const m of [meshMan, prismMan, inM, outM]) { try { if (m) m.delete(); } catch (_) { /* noop */ } }

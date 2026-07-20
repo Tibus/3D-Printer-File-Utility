@@ -16,7 +16,6 @@ import {
 import { lassoSplitAsync } from './split.js';
 import { lassoSplitCSG } from './split-csg.js';
 import { lassoSplitManifold, warmupManifold } from './split-manifold.js';
-import { lassoSplitLocalized } from './split-local.js';
 import { voxelRemesh } from './remesh.js';
 import { booleanObjects } from './boolean.js';
 import { repairMesh } from './repair.js';
@@ -179,16 +178,21 @@ function performSplit() {
   // three-bvh-csg. Double rAF : GARANTIT le rendu du spinner avant le calcul bloquant.
   const run = csg
     ? new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(async () => {
-      const loc = lassoSplitLocalized(g, poly, cam, mw, w, h, det, lassoSplitCSG);
-      if (loc && !loc.fallback) { resolve(loc); return; }
+      // Manifold pour les maillages propres (caps nets). S'il refuse (non-watertight), three-bvh-csg
+      // coupe quand même (marche sur n'importe quel mesh, caps parfois imparfaits) -> le split
+      // produit TOUJOURS un résultat.
       let r = await lassoSplitManifold(g, poly, cam, mw, w, h, det);
-      if (r && r.fallback) { const c = lassoSplitCSG(g, poly, cam, mw, w, h, det); if (c) c.capMode = 'csg'; r = c; }
+      if (r && r.fallback) {
+        const c = lassoSplitCSG(g, poly, cam, mw, w, h, det);
+        if (c && c.inside) { c.capMode = 'csg'; c.approx = true; r = c; }
+      }
       resolve(r);
     })))
     : lassoSplitAsync(g, poly, cam, mw, w, h, det, setProgress);
   run
     .then((res) => {
-      if (!res) { setStatus('Le lasso n’a rien séparé.'); return; }
+      if (res && res.fallback) { setStatus('Découpe impossible sur ce maillage (essaie « Voxel remesh »).'); return; }
+      if (!res) { setStatus(csg ? 'Rien séparé (le lasso ne traverse pas l’objet ?).' : 'Le lasso n’a rien séparé.'); return; }
       // Cap dégradé (mode rapide uniquement) : refuse pour ne PAS détruire le maillage
       // ni cascader. Les modes booléens (local/manifold/csg) sont toujours acceptés.
       if (!csg && res.capMode && res.capMode !== 'worker-cdt') {
@@ -204,7 +208,9 @@ function performSplit() {
       setActiveObject(outMesh);
       renderObjectList();
       flashMesh(inMesh); // clignotement d'alpha sur la pièce découpée (feedback visuel)
-      setStatus('Split effectué (2 objets).');
+      setStatus(res.approx
+        ? 'Split effectué (approximatif — maillage non-watertight ; « Réparer » ou « Voxel remesh » pour des caps nets).'
+        : 'Split effectué (2 objets).');
       pushAction(
         () => { detachObject(inMesh); detachObject(outMesh); attachObject(mesh); setActiveObject(mesh); renderObjectList(); },
         () => { detachObject(mesh); attachObject(inMesh); attachObject(outMesh); setActiveObject(outMesh); renderObjectList(); },

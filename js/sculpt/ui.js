@@ -2,9 +2,23 @@
 
 import { state } from './state.js';
 
+// Toast unique (bas-centre) qui se met à jour à chaque message et disparaît tout seul. setStatus est
+// appelé souvent -> un seul toast réutilisé (pas d'empilement), timer d'auto-masquage réinitialisé.
+let _toastEl = null, _toastTimer = null;
+function showToast(text, ms = 3800) {
+  let wrap = document.getElementById('toast-wrap');
+  if (!wrap) { wrap = document.createElement('div'); wrap.id = 'toast-wrap'; document.body.appendChild(wrap); }
+  if (!_toastEl) { _toastEl = document.createElement('div'); _toastEl.className = 'toast'; wrap.appendChild(_toastEl); }
+  _toastEl.textContent = text;
+  requestAnimationFrame(() => _toastEl && _toastEl.classList.add('show'));
+  clearTimeout(_toastTimer);
+  _toastTimer = setTimeout(() => { if (_toastEl) _toastEl.classList.remove('show'); }, ms);
+}
+
 export function setStatus(text) {
   const el = document.getElementById('status');
-  if (el) el.textContent = text;
+  if (el) el.textContent = text; // fil discret (record) dans le panneau
+  if (text) showToast(text);
 }
 
 export function showLoading(visible, text) {

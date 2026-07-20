@@ -152,10 +152,15 @@ export function buildLassoPrism(geometry, lassoPx, camera, matrixWorld, vw, vh, 
   }
   const margin = Math.max((dmax - dmin) * 0.04, 1e-3); // caps hors de l'objet
   const dRange = { dmin: dmin - margin, dmax: dmax + margin };
-  const step = Math.max(3, Math.min(vw, vh) / (d * 12));
+  // Anneaux en PROFONDEUR : les parois du prisme entre 2 anneaux sont plates alors que la vraie
+  // paroi du frustum (perspective) est une surface réglée courbe -> peu d'anneaux = parois qui ne
+  // suivent pas le frustum -> coupe imprécise/trous sur surfaces courbes en profondeur. Manifold se
+  // sert de ces subdivisions : on les rend denses (c'est au prisme de porter la résolution).
+  // Anneaux denses en profondeur (parois du prisme fidèles au frustum perspective sur coupe courbe).
+  const rings = Math.max(64, d * 8);
+  const step = Math.max(4, Math.min(vw, vh) / (d * 12));
   let lasso = resampleLasso(lassoPx, step);
   if (lasso.length > 600) lasso = resampleLasso(lassoPx, step * (lasso.length / 600)); // garde-fou perf
-  const rings = Math.max(4, d);
   return buildPrism(lasso, camera, vw, vh, hasUV, hasColor, rings, dRange);
 }
 
