@@ -14,6 +14,7 @@ let _pendingCam = null; // { camLocal, proj } : caméra du dernier screenshot, e
 export const CAPTURE_SIZE = 1024; // image de capture CARRÉE (1:1) — important pour l'IA
 
 export function hasPendingCam() { return !!_pendingCam; }
+export function getPendingCam() { return _pendingCam; } // { camLocal, proj } de la dernière capture
 
 // Côté (en pixels écran) du carré de capture 1:1 centré dans la vue.
 export function captureSquareSidePx() {
@@ -465,6 +466,38 @@ export function readMaskCanvas(layer, texSize = 2048, mesh = null, pad = 8) {
 }
 
 export function disposeLayerMask(layer) { if (layer._maskRT) { layer._maskRT.dispose(); layer._maskRT = null; } layer.mask = null; }
+
+// Aperçu du masque DANS LE CADRAGE DE LA CAPTURE (comme la photo) plutôt qu'en UV : on rend l'objet
+// depuis la caméra de capture (cam.camLocal/proj) en échantillonnant le masque UV -> niveaux de gris
+// (blanc = révélé). Renvoie un canvas size² (fond noir). `maskCanvas` = layer.mask (alpha = révélation).
+export function renderMaskView(mesh, maskCanvas, cam, size = 96) {
+  const r = state.renderer;
+  const tex = new THREE.Texture(maskCanvas); tex.flipY = false; tex.needsUpdate = true;
+  tex.minFilter = THREE.LinearFilter; tex.magFilter = THREE.LinearFilter;
+  const mat = new THREE.ShaderMaterial({
+    uniforms: { mask: { value: tex } }, side: THREE.DoubleSide,
+    vertexShader: 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * viewMatrix * modelMatrix * vec4(position, 1.0); }',
+    fragmentShader: 'precision highp float; uniform sampler2D mask; varying vec2 vUv; void main(){ float a = texture2D(mask, vUv).a; gl_FragColor = vec4(vec3(a), 1.0); }',
+  });
+  const scn = new THREE.Scene();
+  const m = new THREE.Mesh(mesh.geometry, mat);
+  m.matrixAutoUpdate = false; m.matrixWorldAutoUpdate = false; m.matrixWorld.identity(); m.frustumCulled = false; // espace local
+  scn.add(m);
+  const camLocalInv = cam.camLocal.clone().invert();
+  const rcam = new THREE.Camera(); rcam.matrixAutoUpdate = false; rcam.matrixWorldAutoUpdate = false;
+  rcam.matrixWorld.copy(cam.camLocal); rcam.matrixWorldInverse.copy(camLocalInv); rcam.projectionMatrix.copy(cam.proj);
+  const rt = new THREE.WebGLRenderTarget(size, size);
+  const prev = r.getRenderTarget(), pc = r.getClearColor(new THREE.Color()), pa = r.getClearAlpha(), pac = r.autoClear;
+  r.autoClear = true; r.setRenderTarget(rt); r.setClearColor(0x000000, 1); r.clear(); r.render(scn, rcam);
+  r.setRenderTarget(prev); r.setClearColor(pc, pa); r.autoClear = pac;
+  const buf = new Uint8Array(size * size * 4); r.readRenderTargetPixels(rt, 0, 0, size, size, buf);
+  const cv = document.createElement('canvas'); cv.width = cv.height = size;
+  const ctx = cv.getContext('2d'); const img = ctx.createImageData(size, size); const row = size * 4;
+  for (let y = 0; y < size; y++) { const s = (size - 1 - y) * row, d = y * row; img.data.set(buf.subarray(s, s + row), d); } // GL bottom-up -> image top-down
+  ctx.putImageData(img, 0, 0);
+  rt.dispose(); mat.dispose(); tex.dispose();
+  return cv;
+}
 
 // Remplit tout le masque : reveal=true -> tout révélé (alpha 1), false -> tout masqué (alpha 0).
 export function setLayerMask(layer, texSize, reveal) {

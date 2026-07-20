@@ -26,7 +26,7 @@ import { autoOrient } from './orient.js';
 import { decimateMesh } from './decimate.js';
 import { applyDisplayMode } from './display.js';
 import { saveScene, loadScene, clearScene } from './autosave.js';
-import { captureView, reprojectToUV, compositeLayers, applyTextureCanvas, hasPendingCam, captureSquareSidePx, paintMaskDab, readMaskCanvas, disposeLayerMask, setLayerMask, invertLayerMask, generateNanoBanana } from './retexture.js';
+import { captureView, reprojectToUV, compositeLayers, applyTextureCanvas, hasPendingCam, getPendingCam, captureSquareSidePx, paintMaskDab, readMaskCanvas, disposeLayerMask, setLayerMask, invertLayerMask, renderMaskView, generateNanoBanana } from './retexture.js';
 import { splitByMask } from './split-mask.js';
 import { pushGeom, pushAction, pushMask, undo, redo, setHistoryListener } from './history.js';
 import { initGizmo, activateGizmo, deactivateGizmo, setAltPivot, isGizmoActive } from './gizmo.js';
@@ -617,10 +617,10 @@ function showMaskMenu(x, y, layer) {
   const menu = document.createElement('div'); menu.id = 'retex-mask-menu'; menu.className = 'ctx-menu';
   const refresh = () => { readMaskCanvas(layer, RETEX_SIZE, mesh); recomposeRetex(); renderRetexLayers(); };
   const item = (label, fn) => { const b = document.createElement('button'); b.className = 'ctx-item'; b.textContent = label; b.onclick = () => { fn(); closeMaskMenu(); }; menu.appendChild(b); };
-  item('🎭 Masque plein (tout révélé)', () => { setLayerMask(layer, RETEX_SIZE, true); refresh(); });
+  // Masque plein = supprimer le masque : plein blanc « tout révélé », indépendant des UV.
+  item('🎭 Masque plein (tout révélé)', () => { disposeLayerMask(layer); recomposeRetex(); renderRetexLayers(); });
   item('⬛ Masque vide (tout masqué)', () => { setLayerMask(layer, RETEX_SIZE, false); refresh(); });
   item('🔄 Inverser le masque', () => { invertLayerMask(layer, RETEX_SIZE); refresh(); });
-  item('🗑 Supprimer le masque', () => { disposeLayerMask(layer); recomposeRetex(); renderRetexLayers(); });
   document.body.appendChild(menu);
   const rect = menu.getBoundingClientRect();
   menu.style.left = Math.max(4, Math.min(x, window.innerWidth - rect.width - 8)) + 'px';
@@ -651,11 +651,14 @@ function renderRetexLayers() {
       tc.fillStyle = '#12121e'; tc.fillRect(0, 0, 44, 44);
       if (src) { try { tc.drawImage(src, 0, 0, 44, 44); } catch (_) {} } }
     thumb.onclick = select;
-    // Vignette masque (façon Photoshop) : blanc = révélé, noir = masqué ; gris clair = pas de masque
+    // Vignette masque (façon Photoshop) : blanc = révélé, noir = masqué ; gris clair = pas de masque.
+    // Si le calque a une caméra de capture, on montre le masque DANS LE CADRAGE PHOTO (pas en UV).
     const mthumb = document.createElement('canvas'); mthumb.width = mthumb.height = 44; mthumb.className = 'retex-thumb retex-mask-thumb' + ((l._maskRT || l.mask) ? ' has-mask' : '');
     mthumb.title = 'Masque du calque — clic droit pour les options (plein / vide / inverser…)';
     { const mc = mthumb.getContext('2d');
-      if (l.mask) { mc.fillStyle = '#0a0a12'; mc.fillRect(0, 0, 44, 44); try { mc.drawImage(l.mask, 0, 0, 44, 44); } catch (_) {} }
+      if (l.mask && l.cam && l.cam.camLocal && mesh) {
+        try { mc.drawImage(renderMaskView(mesh, l.mask, l.cam, 96), 0, 0, 44, 44); } catch (_) { mc.fillStyle = '#0a0a12'; mc.fillRect(0, 0, 44, 44); mc.drawImage(l.mask, 0, 0, 44, 44); }
+      } else if (l.mask) { mc.fillStyle = '#0a0a12'; mc.fillRect(0, 0, 44, 44); try { mc.drawImage(l.mask, 0, 0, 44, 44); } catch (_) {} }
       else { mc.fillStyle = '#dcdce4'; mc.fillRect(0, 0, 44, 44); } } // pas de masque = tout révélé
     mthumb.onclick = select;
     mthumb.oncontextmenu = openMenu;
@@ -730,7 +733,7 @@ document.getElementById('retex-file').addEventListener('change', async (e) => {
     canvas = document.createElement('canvas'); canvas.width = canvas.height = RETEX_SIZE;
     canvas.getContext('2d').drawImage(img, 0, 0, RETEX_SIZE, RETEX_SIZE);
   }
-  const newLayer = { name: file.name.replace(/\.[^.]+$/, '').slice(0, 16), canvas, thumb: img, opacity: 1, visible: true };
+  const newLayer = { name: file.name.replace(/\.[^.]+$/, '').slice(0, 16), canvas, thumb: img, cam: _retexMode === 'proj' ? getPendingCam() : null, opacity: 1, visible: true };
   // Si un masque pré-génération a été peint, il devient le masque de ce calque.
   let usedPregen = false;
   if (_retexPendingMask && _retexPendingMask.mask) {
@@ -826,7 +829,7 @@ document.getElementById('retex-generate').addEventListener('click', async () => 
     const layers = retexLayersOf(mesh);
     const canvas = reprojectToUV(img, mesh, RETEX_SIZE);
     if (dbg) dl(canvas.toDataURL('image/png'), 'debug-4-bake-uv.png');
-    const newLayer = { name: 'IA: ' + prompt.slice(0, 14), canvas, thumb: img, opacity: 1, visible: true };
+    const newLayer = { name: 'IA: ' + prompt.slice(0, 14), canvas, thumb: img, cam: getPendingCam(), opacity: 1, visible: true };
     if (_retexPendingMask && _retexPendingMask.mask) { newLayer.mask = _retexPendingMask.mask; newLayer._maskRT = _retexPendingMask._maskRT; _retexPendingMask = null; _retexMaskMode = 'layer'; _retexSelLayer = newLayer; }
     layers.push(newLayer);
     recomposeRetex(); renderRetexLayers();
