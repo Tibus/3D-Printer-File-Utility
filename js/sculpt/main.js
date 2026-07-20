@@ -755,8 +755,6 @@ document.getElementById('retex-generate').addEventListener('click', async () => 
     // et sera appliqué au calque généré plus bas.
     recomposeRetex(false);
     const capUrl = captureView(); // capture 1:1 flat (albédo) + mémorise la caméra
-    // Sauvegarde le screenshot envoyé à l'IA pour vérification (avant l'appel réseau).
-    { const a = document.createElement('a'); a.href = capUrl; a.download = 'capture-nanobanana.png'; a.click(); }
     const outUrl = await generateNanoBanana(capUrl, prompt, key); // image éditée (dataURL)
     const loadURL = (u) => new Promise((res, rej) => { const im = new Image(); im.onload = () => res(im); im.onerror = () => rej(new Error('image illisible')); im.src = u; });
     const [aiImg, capImg] = await Promise.all([loadURL(outUrl), loadURL(capUrl)]);
@@ -766,8 +764,6 @@ document.getElementById('retex-generate').addEventListener('click', async () => 
     const img = document.createElement('canvas');
     img.width = aiImg.naturalWidth || aiImg.width; img.height = aiImg.naturalHeight || aiImg.height;
     { const c = img.getContext('2d'); c.drawImage(aiImg, 0, 0); c.globalCompositeOperation = 'destination-in'; c.drawImage(capImg, 0, 0, img.width, img.height); c.globalCompositeOperation = 'source-over'; }
-    // Sauvegarde le retour DÉTOURÉ (PNG transparent) pour debug/vérification.
-    { const a = document.createElement('a'); a.href = img.toDataURL('image/png'); a.download = 'nanobanana-retour.png'; a.click(); }
     const layers = retexLayersOf(mesh);
     const canvas = reprojectToUV(img, mesh, RETEX_SIZE);
     const newLayer = { name: 'IA: ' + prompt.slice(0, 14), canvas, opacity: 1, visible: true };
