@@ -327,20 +327,32 @@ function uvCoverage(geometry, texSize) {
   return rt;
 }
 
-// Dilatation du masque : étale l'alpha peint de quelques texels DANS LES TROUS entre îlots UV
-// (le masque peint dans l'atlas laisse les texels pile sur une couture non rasterisés -> liseré).
-// IMPORTANT : ne remplit QUE les texels HORS îlot (cover<0.5) ; les texels DANS un îlot gardent
-// leur vraie valeur — donc 0 si on a effacé (sinon les coutures « repeignaient » à l'effacement).
-const MASK_DILATE_FRAG = `
+// Edge-padding du masque par FLOOD depuis l'îlot le plus proche (pas un simple MAX) : chaque texel
+// de trou de couture prend la valeur du texel D'ÎLOT le plus proche. Effacement propre (un trou près
+// d'un bord effacé prend 0), pas de liseré à la révélation, et gère les trous larges.
+//  - INIT : (valeur, rempli) — les texels d'îlot (cover>0.5) sont « remplis » avec leur alpha,
+//    les trous partent « non remplis ».  Encodage : .r = valeur, .g = drapeau rempli.
+//  - FLOOD : un texel non rempli copie le 1er voisin rempli trouvé -> propage la valeur du bord.
+const MASK_INIT_FRAG = `
   precision highp float;
-  uniform sampler2D tex; uniform sampler2D cover; uniform vec2 texel; varying vec2 vUv;
+  uniform sampler2D src; uniform sampler2D cover; varying vec2 vUv;
   void main() {
-    if (texture2D(cover, vUv).r > 0.5) { gl_FragColor = texture2D(tex, vUv); return; } // dans un îlot : valeur vraie
-    float best = 0.0;
+    float cov = texture2D(cover, vUv).r;
+    float a = texture2D(src, vUv).a;
+    gl_FragColor = cov > 0.5 ? vec4(a, 1.0, 0.0, 1.0) : vec4(0.0, 0.0, 0.0, 1.0);
+  }
+`;
+const MASK_FLOOD_FRAG = `
+  precision highp float;
+  uniform sampler2D tex; uniform vec2 texel; varying vec2 vUv;
+  void main() {
+    vec4 c = texture2D(tex, vUv);
+    if (c.g > 0.5) { gl_FragColor = c; return; }        // déjà rempli (îlot ou déjà floodé)
     for (int dy = -1; dy <= 1; dy++) for (int dx = -1; dx <= 1; dx++) {
-      best = max(best, texture2D(tex, vUv + vec2(float(dx), float(dy)) * texel).a);
+      vec4 s = texture2D(tex, vUv + vec2(float(dx), float(dy)) * texel);
+      if (s.g > 0.5) { gl_FragColor = vec4(s.r, 1.0, 0.0, 1.0); return; } // prend le bord le plus proche
     }
-    gl_FragColor = vec4(best);                          // trou de couture : rempli depuis le voisin le plus révélé
+    gl_FragColor = c;                                   // encore vide (trou plus large que pad)
   }
 `;
 // Ping-pong réutilisé (RT 2048² coûteuses à recréer chaque frame de peinture).
@@ -348,20 +360,23 @@ let _mdil = null;
 function dilateMask(srcTexture, coverTexture, texSize, pad) {
   const r = state.renderer;
   if (!_mdil || _mdil.size !== texSize) {
-    if (_mdil) { _mdil.rtA.dispose(); _mdil.rtB.dispose(); _mdil.mat.dispose(); _mdil.geo.dispose(); }
+    if (_mdil) { _mdil.rtA.dispose(); _mdil.rtB.dispose(); _mdil.initMat.dispose(); _mdil.floodMat.dispose(); _mdil.geo.dispose(); }
     const mk = () => { const rt = new THREE.WebGLRenderTarget(texSize, texSize); rt.texture.colorSpace = THREE.NoColorSpace; return rt; };
-    const mat = new THREE.ShaderMaterial({ uniforms: { tex: { value: null }, cover: { value: null }, texel: { value: new THREE.Vector2(1 / texSize, 1 / texSize) } }, vertexShader: FS_VERT, fragmentShader: MASK_DILATE_FRAG });
     const geo = new THREE.PlaneGeometry(2, 2);
-    const scene = new THREE.Scene(); scene.add(new THREE.Mesh(geo, mat));
-    _mdil = { size: texSize, rtA: mk(), rtB: mk(), mat, geo, scene, cam: new THREE.Camera() };
+    const initMat = new THREE.ShaderMaterial({ uniforms: { src: { value: null }, cover: { value: null } }, vertexShader: FS_VERT, fragmentShader: MASK_INIT_FRAG });
+    const floodMat = new THREE.ShaderMaterial({ uniforms: { tex: { value: null }, texel: { value: new THREE.Vector2(1 / texSize, 1 / texSize) } }, vertexShader: FS_VERT, fragmentShader: MASK_FLOOD_FRAG });
+    const initScene = new THREE.Scene(); initScene.add(new THREE.Mesh(geo, initMat));
+    const floodScene = new THREE.Scene(); floodScene.add(new THREE.Mesh(geo, floodMat));
+    _mdil = { size: texSize, rtA: mk(), rtB: mk(), geo, initMat, floodMat, initScene, floodScene, cam: new THREE.Camera() };
   }
-  const { rtA, rtB, mat, scene, cam } = _mdil;
-  mat.uniforms.cover.value = coverTexture;
+  const { rtA, rtB, initMat, floodMat, initScene, floodScene, cam } = _mdil;
   const prev = r.getRenderTarget(), prevAC = r.autoClear; r.autoClear = true;
-  let input = srcTexture, a = rtA, b = rtB, out = rtA;
-  for (let i = 0; i < pad; i++) {
-    mat.uniforms.tex.value = input; r.setRenderTarget(a); r.render(scene, cam);
-    input = a.texture; out = a; const t = a; a = b; b = t;
+  initMat.uniforms.src.value = srcTexture; initMat.uniforms.cover.value = coverTexture;
+  r.setRenderTarget(rtA); r.render(initScene, cam);     // init -> rtA
+  let a = rtA, b = rtB, out = rtA;
+  for (let i = 0; i < pad; i++) {                        // flood : 1 texel/passe depuis les bords d'îlot
+    floodMat.uniforms.tex.value = a.texture; r.setRenderTarget(b); r.render(floodScene, cam);
+    out = b; const t = a; a = b; b = t;
   }
   r.setRenderTarget(prev); r.autoClear = prevAC;
   return out;
@@ -428,7 +443,7 @@ export function paintMaskDab(mesh, layer, worldPoint, radius, hardness, strength
 // Lit la RT du masque -> canvas (alpha = révélation) pour le compositing.
 // La RT d'accumulation reste intacte : on dilate dans un ping-pong séparé avant la lecture
 // (sinon la dilatation se cumulerait et « gonflerait » le masque à chaque frame).
-export function readMaskCanvas(layer, texSize = 2048, mesh = null, pad = 2) {
+export function readMaskCanvas(layer, texSize = 2048, mesh = null, pad = 8) {
   if (!layer._maskRT) return null;
   const renderer = state.renderer;
   const cover = (pad > 0 && mesh) ? uvCoverage(mesh.geometry, texSize) : null;
