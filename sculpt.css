@@ -428,6 +428,12 @@ body.dragging {
     border-color: #d9a441;
 }
 
+/* Masque en cours d'édition N&B sur l'objet */
+.retex-mask-thumb.editing {
+    outline: 2px solid #22d3ee;
+    outline-offset: 1px;
+}
+
 /* Menu contextuel (opérations de masque) */
 .ctx-menu {
     position: fixed;

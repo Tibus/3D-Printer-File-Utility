@@ -522,6 +522,7 @@ let _retexSelLayer = null;         // calque sélectionné (mode 'layer')
 let _retexMaskMode = 'layer';      // 'layer' = masque du calque sélectionné ; 'pregen' = masque pré-génération
 let _retexPendingMask = null;      // { _maskRT, mask } peint avant import, appliqué au prochain calque
 let _retexHiliteCanvas = null;     // calque de surbrillance du masque pré-gen (feedback visuel)
+let _retexMaskEdit = false;        // mode édition : affiche le masque du calque sélectionné en N&B sur l'objet
 // Cible de peinture de masque selon le mode courant.
 function retexPaintTarget() {
   if (_retexMaskMode === 'pregen') { if (!_retexPendingMask) _retexPendingMask = { name: '(pré-gen)' }; return _retexPendingMask; }
@@ -590,9 +591,23 @@ function retexLayersOf(mesh) {
 }
 // withHilite=false : recompose SANS la surbrillance du masque pré-gen (ex. juste avant la
 // capture envoyée à l'IA — le cyan ne doit pas se retrouver dans le screenshot).
+// Canvas N&B du masque (blanc = révélé, noir = masqué) pour l'affichage/édition sur l'objet.
+function maskBWCanvas(mask, size) {
+  const cv = document.createElement('canvas'); cv.width = cv.height = size;
+  const c = cv.getContext('2d');
+  c.fillStyle = '#fff'; c.fillRect(0, 0, size, size); // pas de masque -> tout révélé (blanc)
+  if (mask) { c.fillStyle = '#000'; c.fillRect(0, 0, size, size); c.drawImage(mask, 0, 0, size, size); }
+  return cv;
+}
 function recomposeRetex(withHilite = true) {
   const mesh = state.targetMesh; if (!mesh) return;
   const layers = retexLayersOf(mesh);
+  // Mode édition de masque : on affiche le masque du calque sélectionné en N&B sur l'objet.
+  if (_retexMaskEdit && _retexSelLayer && layers.includes(_retexSelLayer)) {
+    applyTextureCanvas(mesh, maskBWCanvas(_retexSelLayer.mask, RETEX_SIZE));
+    updateTexturePreview(true);
+    return;
+  }
   // En mode pré-génération : surbrillance de la zone du masque pré-gen (feedback visuel).
   let display = layers;
   if (withHilite && _retexMaskMode === 'pregen' && _retexPendingMask && _retexPendingMask.mask) {
@@ -617,6 +632,14 @@ function showMaskMenu(x, y, layer) {
   const menu = document.createElement('div'); menu.id = 'retex-mask-menu'; menu.className = 'ctx-menu';
   const refresh = () => { readMaskCanvas(layer, RETEX_SIZE, mesh); recomposeRetex(); renderRetexLayers(); };
   const item = (label, fn) => { const b = document.createElement('button'); b.className = 'ctx-item'; b.textContent = label; b.onclick = () => { fn(); closeMaskMenu(); }; menu.appendChild(b); };
+  // Bascule l'affichage du masque en N&B sur l'objet (pour l'éditer directement).
+  const editing = _retexMaskEdit && _retexSelLayer === layer;
+  item(editing ? '🎨 Revenir à la couleur' : '✏️ Éditer le masque sur l’objet (N&B)', () => {
+    if (editing) { _retexMaskEdit = false; }
+    else { _retexMaskEdit = true; _retexSelLayer = layer; _retexMaskMode = 'layer'; }
+    recomposeRetex(); renderRetexLayers();
+    setStatus(_retexMaskEdit ? 'Édition du masque (N&B) — peins sur l’objet pour révéler (Alt = masquer).' : 'Affichage couleur.');
+  });
   // Masque plein = supprimer le masque : plein blanc « tout révélé », indépendant des UV.
   item('🎭 Masque plein (tout révélé)', () => { disposeLayerMask(layer); recomposeRetex(); renderRetexLayers(); });
   item('⬛ Masque vide (tout masqué)', () => { setLayerMask(layer, RETEX_SIZE, false); refresh(); });
@@ -639,6 +662,7 @@ function renderRetexLayers() {
     const select = () => {
       _retexSelLayer = (_retexSelLayer === l ? null : l);
       _retexMaskMode = 'layer'; // sélectionner un calque -> mode masque de calque
+      if (!_retexSelLayer) _retexMaskEdit = false; // désélection -> retour couleur
       recomposeRetex(); renderRetexLayers();
       setStatus(_retexSelLayer ? 'Masque de calque — peins sur l’objet pour révéler (Alt = effacer).' : 'Calque désélectionné.');
     };
@@ -653,8 +677,8 @@ function renderRetexLayers() {
     thumb.onclick = select;
     // Vignette masque (façon Photoshop) : blanc = révélé, noir = masqué ; gris clair = pas de masque.
     // Si le calque a une caméra de capture, on montre le masque DANS LE CADRAGE PHOTO (pas en UV).
-    const mthumb = document.createElement('canvas'); mthumb.width = mthumb.height = 44; mthumb.className = 'retex-thumb retex-mask-thumb' + ((l._maskRT || l.mask) ? ' has-mask' : '');
-    mthumb.title = 'Masque du calque — clic droit pour les options (plein / vide / inverser…)';
+    const mthumb = document.createElement('canvas'); mthumb.width = mthumb.height = 44; mthumb.className = 'retex-thumb retex-mask-thumb' + ((l._maskRT || l.mask) ? ' has-mask' : '') + ((_retexMaskEdit && l === _retexSelLayer) ? ' editing' : '');
+    mthumb.title = 'Masque du calque — clic droit pour les options (éditer N&B, plein, vide, inverser…)';
     { const mc = mthumb.getContext('2d');
       if (l.mask && l.cam && l.cam.camLocal && mesh) {
         try { mc.drawImage(renderMaskView(mesh, l.mask, l.cam, 96), 0, 0, 44, 44); } catch (_) { mc.fillStyle = '#0a0a12'; mc.fillRect(0, 0, 44, 44); mc.drawImage(l.mask, 0, 0, 44, 44); }
@@ -673,7 +697,7 @@ function renderRetexLayers() {
     const up = document.createElement('button'); up.className = 'obj-btn'; up.textContent = '↑'; up.title = 'Monter';
     up.onclick = () => { if (i < layers.length - 1) { const t = layers[i]; layers[i] = layers[i + 1]; layers[i + 1] = t; recomposeRetex(); renderRetexLayers(); } };
     const del = document.createElement('button'); del.className = 'obj-btn'; del.textContent = '🗑'; del.title = 'Supprimer le calque';
-    del.onclick = () => { if (_retexSelLayer === l) _retexSelLayer = null; disposeLayerMask(l); layers.splice(i, 1); recomposeRetex(); renderRetexLayers(); };
+    del.onclick = () => { if (_retexSelLayer === l) { _retexSelLayer = null; _retexMaskEdit = false; } disposeLayerMask(l); layers.splice(i, 1); recomposeRetex(); renderRetexLayers(); };
     row.append(thumb, mthumb, name, eye, op, up, del);
     box.appendChild(row);
   }
@@ -1081,6 +1105,7 @@ toolButtons.forEach((btn) => {
     document.getElementById('mask-panel').style.display = isMask ? 'flex' : 'none';
     document.getElementById('retexture-panel').style.display = isRetex ? 'flex' : 'none';
     document.getElementById('left-layers-section').style.display = isRetex ? 'flex' : 'none'; // liste calques (panneau gauche)
+    if (!isRetex && _retexMaskEdit) { _retexMaskEdit = false; if (state.targetMesh) recomposeRetex(); } // quitte l'édition N&B -> restaure la couleur
     updateCaptureFrame(isRetex);
     updateTexturePreview(isRetex);
     if (isRetex) renderRetexLayers();
