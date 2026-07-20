@@ -366,9 +366,9 @@ function applyFastStroke(pos, nor, tool, size, intensity, invert, neighbors, mas
       accBuf[v] = acc + s; accStamp[v] = accId;
       x += infNor[v3] * s; y += infNor[v3 + 1] * s; z += infNor[v3 + 2] * s;
     } else if (tool === 'pinch') {
-      // rapproche les sommets du centre, PLAFONNÉ (asymptotique) + falloff DURCI (f³) pour un pincement
-      // concentré au centre (les triangles lointains sont très peu tirés, façon Nomad). invert = écarte.
-      const fp = f * f * f;
+      // rapproche les sommets du centre, PLAFONNÉ (asymptotique) + falloff TRÈS DURCI (f⁵) : pincement
+      // très concentré au centre (les triangles lointains bougent à peine, façon Nomad). invert = écarte.
+      const f2 = f * f, fp = f2 * f2 * f;
       const acc = accStamp[v] === accId ? accBuf[v] : 0;
       const room = 1 / (1 + acc / (size * 0.3));
       const w = fp * strength * PINCH_STR * sign * room;
@@ -502,7 +502,7 @@ function applySeamStroke(pos, nor, tool, size, intensity, invert, mask) {
       accBuf[r] = acc + s; accStamp[r] = accId;
       x += infNor[v3] * s; y += infNor[v3 + 1] * s; z += infNor[v3 + 2] * s;
     } else if (tool === 'pinch') {
-      const fp = f * f * f;
+      const f2 = f * f, fp = f2 * f2 * f;
       const acc = accStamp[r] === accId ? accBuf[r] : 0;
       const room = 1 / (1 + acc / (size * 0.3));
       const w = fp * strength * PINCH_STR * sign * room;
