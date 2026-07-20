@@ -21,8 +21,8 @@ export function captureSquareSidePx() {
   return Math.min(s.x, s.y);
 }
 
-// Caméra CARRÉE (aspect 1:1) centrée sur la vue courante, cadrant le carré centré de côté
-// min(largeur, hauteur). Renvoie une PerspectiveCamera prête à rendre.
+// Caméra CARRÉE (aspect 1:1) reproduisant la VUE EXACTE : même position, même orientation et
+// même zoom que la caméra courante, cadrant le carré centré de côté min(largeur, hauteur).
 function squareCamera() {
   const cam = state.camera; cam.updateMatrixWorld(true);
   const size = state.renderer.getSize(new THREE.Vector2());
@@ -86,10 +86,9 @@ export function captureView() {
   ctx.putImageData(im, 0, 0);
 
   // Caméra mémorisée EN ESPACE OBJET (attachée à l'objet) : on stocke sa pose RELATIVE à l'objet
-  // (camLocal = Mo⁻¹·camWorld) + sa projection. À la reprojection on reconstruit la caméra par
-  // rapport à la pose COURANTE de l'objet (camWorld = Mo·camLocal). La relation caméra↔objet est
-  // ainsi invariante : rotation / échelle / déplacement au gizmo (avant OU après la capture) ne
-  // décalent plus la projection, puisque tout est exprimé dans le repère de l'objet.
+  // (camLocal = Mo⁻¹·camWorld) + sa projection. La reprojection travaille ENSUITE entièrement en
+  // espace local (géométrie à l'identité, caméra = camLocal) -> aucun Mo n'intervient, donc gizmo
+  // (déplacement / rotation / échelle, avant OU après) sans aucun effet sur la projection.
   let camLocal = null;
   if (state.targetMesh) {
     state.targetMesh.updateMatrixWorld(true);
@@ -175,39 +174,35 @@ export function reprojectToUV(image, mesh, texSize = 2048, cam = _pendingCam, pa
   const prevRT0 = renderer.getRenderTarget();
   const prevClear = renderer.getClearColor(new THREE.Color()); const prevAlpha = renderer.getClearAlpha();
 
-  // Caméra ATTACHÉE À L'OBJET : reconstruite par rapport à la pose COURANTE (camWorld = Mo·camLocal).
-  // Le mesh est reprojeté à cette même pose Mo -> relation caméra↔objet identique à la capture, quel
-  // que soit le gizmo (avant/après). Le screenshot, pris à une autre pose monde, reste valide : seule
-  // compte la géométrie RELATIVE à la caméra.
-  mesh.updateMatrixWorld(true);
-  const meshMatrix = mesh.matrixWorld.clone();
-  const camWorld = meshMatrix.clone().multiply(cam.camLocal);
-  const camWorldInv = camWorld.clone().invert();
-  const camViewProj = cam.proj.clone().multiply(camWorldInv); // P · camWorld⁻¹
-  const camPos = new THREE.Vector3().setFromMatrixPosition(camWorld);
-  // Caméra reconstruite pour la passe de profondeur (matrices figées).
+  // Reprojection EN ESPACE LOCAL DE L'OBJET : on rend la géométrie à l'IDENTITÉ et on place la
+  // caméra à `camLocal` (pose de capture DANS le repère objet). Le résultat est identique au
+  // screenshot (clip = P·camLocal⁻¹·p) et TOTALEMENT indépendant de la pose monde Mo — donc gizmo
+  // (déplacement / rotation / échelle, avant OU après) sans aucun effet. Aucun Mo n'intervient :
+  // rien à annuler, rien à inverser côté monde. C'est « la caméra appartient à l'objet », littéralement.
+  const IDENT = new THREE.Matrix4();
+  const camLocalInv = cam.camLocal.clone().invert();
+  const camViewProj = cam.proj.clone().multiply(camLocalInv); // P · camLocal⁻¹
+  const camPos = new THREE.Vector3().setFromMatrixPosition(cam.camLocal); // caméra EN LOCAL
   const rcam = new THREE.Camera();
   rcam.matrixAutoUpdate = false; rcam.matrixWorldAutoUpdate = false;
-  rcam.matrixWorld.copy(camWorld); rcam.matrixWorldInverse.copy(camWorldInv); rcam.projectionMatrix.copy(cam.proj);
+  rcam.matrixWorld.copy(cam.camLocal); rcam.matrixWorldInverse.copy(camLocalInv); rcam.projectionMatrix.copy(cam.proj);
 
-  // 1) Passe de profondeur depuis la caméra reconstruite -> distance de la surface visible.
+  // 1) Passe de profondeur (géométrie locale, caméra locale) -> distance de la surface visible.
   const DSZ = 1024;
   const depthRT = new THREE.WebGLRenderTarget(DSZ, DSZ, { type: THREE.HalfFloatType });
   const depthMat = new THREE.ShaderMaterial({ vertexShader: DEPTH_VERT, fragmentShader: DEPTH_FRAG, side: THREE.DoubleSide });
   const dscn = new THREE.Scene();
   const dmesh = new THREE.Mesh(mesh.geometry, depthMat);
-  dmesh.matrixAutoUpdate = false; dmesh.matrixWorldAutoUpdate = false; dmesh.matrixWorld.copy(meshMatrix); // pose courante
-  dmesh.frustumCulled = false; // le VS rend en espace UV -> ne pas culler sur la bbox monde
+  dmesh.matrixAutoUpdate = false; dmesh.matrixWorldAutoUpdate = false; dmesh.matrixWorld.copy(IDENT); // espace local
+  dmesh.frustumCulled = false; // le VS rend en espace UV -> ne pas culler sur la bbox
   dscn.add(dmesh);
   renderer.setRenderTarget(depthRT); renderer.setClearColor(0x000000, 1); renderer.clear();
   renderer.render(dscn, rcam);
   renderer.setRenderTarget(prevRT0);
 
-  // biais d'occlusion ~ 1% de la taille de l'objet EN MONDE (la profondeur est en unités monde ->
-  // tenir compte de l'échelle courante, sinon un objet scalé au gizmo a un biais trop faible -> trous).
+  // biais d'occlusion ~ 1% de la taille locale de l'objet (mesh à l'identité -> pas d'échelle monde).
   mesh.geometry.computeBoundingBox(); const bs = new THREE.Vector3(); mesh.geometry.boundingBox.getSize(bs);
-  const _sc = new THREE.Vector3(); meshMatrix.decompose(new THREE.Vector3(), new THREE.Quaternion(), _sc);
-  const depthBias = Math.max(bs.x * Math.abs(_sc.x), bs.y * Math.abs(_sc.y), bs.z * Math.abs(_sc.z)) * 0.01;
+  const depthBias = Math.max(bs.x, bs.y, bs.z) * 0.01;
 
   const srcTex = new THREE.Texture(image);
   srcTex.colorSpace = THREE.SRGBColorSpace; srcTex.flipY = true;
@@ -223,7 +218,7 @@ export function reprojectToUV(image, mesh, texSize = 2048, cam = _pendingCam, pa
   rt.texture.colorSpace = THREE.SRGBColorSpace;
   const scn = new THREE.Scene();
   const proj = new THREE.Mesh(mesh.geometry, mat);
-  proj.matrixAutoUpdate = false; proj.matrixWorldAutoUpdate = false; proj.matrixWorld.copy(meshMatrix); // pose courante
+  proj.matrixAutoUpdate = false; proj.matrixWorldAutoUpdate = false; proj.matrixWorld.copy(IDENT); // espace local
   proj.frustumCulled = false; // le VS rend en espace UV (gl_Position=uv*2-1) -> ne jamais culler
   scn.add(proj);
 
