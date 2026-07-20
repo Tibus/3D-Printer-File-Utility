@@ -769,9 +769,6 @@ document.getElementById('retex-generate').addEventListener('click', async () => 
     { const a = document.createElement('a'); a.href = img.toDataURL('image/png'); a.download = 'nanobanana-retour.png'; a.click(); }
     const layers = retexLayersOf(mesh);
     const canvas = reprojectToUV(img, mesh, RETEX_SIZE);
-    // DEBUG : bake UV brut (texture reprojetée, avant compositing). Permet de voir si le décalage
-    // est déjà dans l'atlas UV (bug reprojection) ou apparaît seulement sur l'objet (bug affichage/UV).
-    { const a = document.createElement('a'); a.href = canvas.toDataURL('image/png'); a.download = 'bake-uv.png'; a.click(); }
     const newLayer = { name: 'IA: ' + prompt.slice(0, 14), canvas, opacity: 1, visible: true };
     if (_retexPendingMask && _retexPendingMask.mask) { newLayer.mask = _retexPendingMask.mask; newLayer._maskRT = _retexPendingMask._maskRT; _retexPendingMask = null; _retexMaskMode = 'layer'; _retexSelLayer = newLayer; }
     layers.push(newLayer);
