@@ -307,14 +307,14 @@ function renderObjectList() {
   refreshBoolTargets();
 }
 
-// Peuple le sélecteur de cible booléenne (tous les objets sauf l'actif) et masque la
-// section s'il y a moins de 2 objets.
+// Peuple le sélecteur de cible booléenne (tous les objets sauf l'actif) et n'affiche la section
+// que dans l'outil « Autres » et s'il y a au moins 2 objets.
 function refreshBoolTargets() {
   const sec = document.getElementById('bool-section');
   const sel = document.getElementById('bool-target');
   if (!sec || !sel) return;
   const others = state.objects.filter((o) => o !== state.targetMesh);
-  sec.style.display = others.length ? '' : 'none';
+  sec.style.display = (state.params.tool === 'other' && others.length) ? '' : 'none';
   const prev = sel.value;
   sel.innerHTML = '';
   for (let i = 0; i < state.objects.length; i++) {
@@ -1106,6 +1106,7 @@ toolButtons.forEach((btn) => {
     document.getElementById('retexture-panel').style.display = isRetex ? 'flex' : 'none';
     document.getElementById('left-layers-section').style.display = isRetex ? 'flex' : 'none'; // liste calques (panneau gauche)
     if (!isRetex && _retexMaskEdit) { _retexMaskEdit = false; if (state.targetMesh) recomposeRetex(); } // quitte l'édition N&B -> restaure la couleur
+    refreshBoolTargets(); // section booléens visible seulement dans l'outil « Autres »
     updateCaptureFrame(isRetex);
     updateTexturePreview(isRetex);
     if (isRetex) renderRetexLayers();
