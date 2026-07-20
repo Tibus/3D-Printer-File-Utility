@@ -532,11 +532,11 @@ export function invertLayerMask(layer, texSize) {
 const NANO_MODEL = 'gemini-2.5-flash-image';
 // Prompt SYSTÈME (dans le code) : cadre la tâche pour que la sortie reste reprojetable.
 const NANO_SYSTEM = [
-  'You edit the surface appearance (texture/material/color) of a 3D model shown in a flat, unlit screenshot.',
-  'CRITICAL: keep the EXACT same silhouette, geometry, pose, camera framing and composition as the input image — do not move, rotate, rescale, crop or reframe anything. The output must align pixel-for-pixel with the input so it can be reprojected onto the model.',
-  'Only change the appearance as requested. Keep it flat/even lighting, no added shadows, highlights or background.',
-  'Return a single edited image, same resolution and framing as the input.',
-  'Here is the request of the user : ',
+  'You repaint ONLY the surface appearance (texture / material / color) of the single 3D object shown in this flat, unlit screenshot. Treat it exactly like applying a new texture onto the very same shape — an in-place repaint, never a re-drawing.',
+  'ABSOLUTE, NON-NEGOTIABLE CONSTRAINT — pixel-perfect alignment: the object MUST stay at the EXACT same pixel position, scale, rotation and silhouette as the input. Do NOT move, shift, translate, rotate, tilt, scale, zoom, re-center, crop, pad, add margins, or reframe the object — not even by a single pixel, whatever the camera angle. The output silhouette must overlap the input silhouette PERFECTLY: every contour/edge of the object must land on the exact same pixels as in the input. If you were to stack the output on top of the input, the shapes must coincide 1:1. This is mandatory: the result is reprojected back onto the 3D model, so any displacement, tilt or resize breaks the projection.',
+  'Keep the framing and composition identical. Preserve the background exactly as given (transparent stays transparent). Do NOT add a background, floor, ground, horizon, shadow, cast shadow, reflection, glow, vignette, outline or border. Keep flat, even, neutral lighting with no added highlights or shading.',
+  'Keep the geometry, contour, proportions, thickness and orientation strictly identical; change ONLY the requested appearance.',
+  'Output a single image at the same resolution and the same framing as the input, with the object on the same pixels.',
 ].join(' ');
 export async function generateNanoBanana(imageDataURL, prompt, apiKey, model = NANO_MODEL) {
   const b64 = imageDataURL.split(',')[1];
