@@ -369,8 +369,15 @@ export function paintMaskDab(mesh, layer, worldPoint, radius, hardness, strength
   // Base : toujours révélée au départ. Autre calque : révélé si le 1er geste est un effacement
   // (sinon effacer sur un masque tout-à-0 ne ferait rien), masqué sinon (on peint pour révéler).
   ensureLayerMaskRT(layer, texSize, !!layer._isBase || erase);
+  // EN ESPACE LOCAL (comme la reprojection) : le VS rend la géométrie LOCALE (modelMatrix=identité)
+  // -> il faut exprimer le point du pinceau et la caméra dans le repère LOCAL de l'objet, sinon le
+  // masque est décalé de la transform gizmo (vWorld local vs brush monde). radius = rayon local
+  // (même convention que la brosse de sculpt, qui opère en local).
+  const inv = (meshMatrix || mesh.matrixWorld).clone().invert();
+  const localBrush = worldPoint.clone().applyMatrix4(inv);
+  const localCam = state.camera.position.clone().applyMatrix4(inv);
   const mat = new THREE.ShaderMaterial({
-    uniforms: { brushPos: { value: worldPoint }, radius: { value: radius }, hardness: { value: hardness }, strength: { value: strength }, camPos: { value: state.camera.position.clone() } },
+    uniforms: { brushPos: { value: localBrush }, radius: { value: radius }, hardness: { value: hardness }, strength: { value: strength }, camPos: { value: localCam } },
     vertexShader: VERT, fragmentShader: MASK_FRAG, side: THREE.DoubleSide,
     transparent: true, blending: THREE.CustomBlending,
     blendEquation: erase ? THREE.ReverseSubtractEquation : THREE.AddEquation,
@@ -381,8 +388,8 @@ export function paintMaskDab(mesh, layer, worldPoint, radius, hardness, strength
   });
   const scn = new THREE.Scene();
   const m = new THREE.Mesh(mesh.geometry, mat);
-  m.matrixAutoUpdate = false; m.matrixWorldAutoUpdate = false; m.matrixWorld.copy(meshMatrix || mesh.matrixWorld);
-  m.frustumCulled = false; // rendu en espace UV via caméra factice -> ne pas culler (objet loin de l'origine)
+  m.matrixAutoUpdate = false; m.matrixWorldAutoUpdate = false; m.matrixWorld.identity(); // espace local
+  m.frustumCulled = false; // rendu en espace UV via caméra factice -> ne pas culler
   scn.add(m);
   const prev = renderer.getRenderTarget();
   // autoClear=false : chaque dab s'ACCUMULE dans la RT (blending additif/soustractif) au lieu

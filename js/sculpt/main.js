@@ -421,7 +421,8 @@ function processMove() {
   pendingMods = null;
 
   if (!sculpting) {
-    if (state.params.tool === 'split' || state.params.tool === 'gizmo' || state.params.tool === 'retexture' || state.params.tool === 'other') { hideBrushCursor(); return; }
+    // retexture : on montre le cercle d'influence (comme les brosses) pour voir la zone peinte du masque
+    if (state.params.tool === 'split' || state.params.tool === 'gizmo' || state.params.tool === 'other') { hideBrushCursor(); return; }
     updateBrushCursor(raycastSurface());
     return;
   }
@@ -1015,7 +1016,7 @@ toolButtons.forEach((btn) => {
     toolButtons.forEach((b) => b.classList.toggle('active', b === btn));
     const t = state.params.tool, isGizmo = t === 'gizmo', isMask = t === 'mask', isRetex = t === 'retexture';
     applyToolVisibility(t); // n'affiche que les options liées à l'outil sélectionné
-    if (t === 'split' || t === 'other' || isGizmo || isRetex) hideBrushCursor();
+    if (t === 'split' || t === 'other' || isGizmo) hideBrushCursor(); // retexture garde le cercle d'influence
     if (isGizmo) activateGizmo(state.targetMesh); else deactivateGizmo();
     document.getElementById('gizmo-hint').style.display = isGizmo ? '' : 'none';
     document.getElementById('mask-panel').style.display = isMask ? 'flex' : 'none';
