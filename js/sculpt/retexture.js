@@ -354,15 +354,25 @@ export async function generateNanoBanana(imageDataURL, prompt, apiKey, model = N
   const body = {
     systemInstruction: { parts: [{ text: NANO_SYSTEM }] },
     contents: [{ parts: [{ text: prompt }, { inline_data: { mime_type: mime, data: b64 } }] }],
+    // Force la sortie image : sans ça le modèle peut ne renvoyer que du texte.
+    generationConfig: { responseModalities: ['IMAGE'] },
   };
   const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
   });
   if (!res.ok) { const t = await res.text().catch(() => ''); throw new Error(`API ${res.status} ${t.slice(0, 300)}`); }
   const data = await res.json();
-  const parts = (data.candidates && data.candidates[0] && data.candidates[0].content && data.candidates[0].content.parts) || [];
+  const cand = (data.candidates && data.candidates[0]) || null;
+  const parts = (cand && cand.content && cand.content.parts) || [];
   const p = parts.find((x) => x.inlineData || x.inline_data);
-  if (!p) { const txt = parts.map((x) => x.text).filter(Boolean).join(' '); throw new Error('Pas d’image renvoyée' + (txt ? ` (${txt.slice(0, 200)})` : '')); }
+  if (!p) {
+    // Pas d'image : surface la vraie raison (blocage sécurité, quota de tokens, refus…).
+    const txt = parts.map((x) => x.text).filter(Boolean).join(' ');
+    const block = data.promptFeedback && data.promptFeedback.blockReason;
+    const finish = cand && cand.finishReason;
+    const why = block ? `bloqué : ${block}` : (finish && finish !== 'STOP') ? `finishReason : ${finish}` : txt ? txt.slice(0, 200) : 'réponse vide';
+    throw new Error(`Pas d’image renvoyée (${why})`);
+  }
   const inl = p.inlineData || p.inline_data;
   return `data:${inl.mimeType || inl.mime_type || 'image/png'};base64,${inl.data}`;
 }
