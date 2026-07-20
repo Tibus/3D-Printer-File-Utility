@@ -52,6 +52,10 @@ const PINCH_STR = 0.4;      // force du pincement (pinch/crease) par coup
 let _accBuf = new Float32Array(0);
 let _accStamp = new Int32Array(0);
 let _accId = 0;
+// Normale FIGÉE au 1er contact du stroke (inflate/déflate) : évite la rétroaction quand les
+// normales sont recalculées en cours de stroke (en déflate, un repli inverse la normale et
+// ferait osciller la direction -> triangles retournés).
+let _infNor = new Float32Array(0);
 export function beginStroke() { _accId++; }
 
 // ---------- Enregistrement pour l'undo (vertices touchés du stroke) ----------
@@ -169,6 +173,7 @@ function ensureArrays(geometry) {
   if (_touchedList.length < vc) _touchedList = new Int32Array(vc);
   if (!_stamp || _stamp.length < vc) _stamp = new Int32Array(vc);
   if (_accBuf.length < vc) { _accBuf = new Float32Array(vc); _accStamp = new Int32Array(vc); }
+  if (_infNor.length < vc * 3) _infNor = new Float32Array(vc * 3);
 }
 
 // Remplit _idxArr/_idxCount (vertices, dédup), _triArr/_triCount (triangles),
@@ -310,7 +315,7 @@ function applyFastStroke(pos, nor, tool, size, intensity, invert, neighbors, mas
   const alpha = state.alpha, an = alpha.n, agrid = alpha.grid;
   const flut = state.falloff, fn1 = flut.length - 1;
   const maxHeight = size * BUILD_HEIGHT * strength;
-  const accBuf = _accBuf, accStamp = _accStamp, accId = _accId;
+  const accBuf = _accBuf, accStamp = _accStamp, accId = _accId, infNor = _infNor;
 
   resetRange();
   for (let i = 0; i < _idxCount; i++) {
@@ -351,20 +356,28 @@ function applyFastStroke(pos, nor, tool, size, intensity, invert, neighbors, mas
         x += (ax * li - x) * w; y += (ay * li - y) * w; z += (az * li - z) * w;
       }
     } else if (tool === 'inflate') {
-      // gonfle le long de la normale PROPRE de chaque sommet (invert = dégonfle)
-      const acc = accStamp[v] === accId ? accBuf[v] : 0;
+      // gonfle le long de la normale de chaque sommet FIGÉE au 1er contact (invert = dégonfle) :
+      // direction stable sur tout le stroke -> pas d'oscillation/repli en déflate.
+      const first = accStamp[v] !== accId;
+      if (first) { infNor[v3] = nor[v3]; infNor[v3 + 1] = nor[v3 + 1]; infNor[v3 + 2] = nor[v3 + 2]; }
+      const acc = first ? 0 : accBuf[v];
       const room = 1 / (1 + Math.abs(acc) / maxHeight);
       const s = maxOffset * f * sign * room;
       accBuf[v] = acc + s; accStamp[v] = accId;
-      x += nor[v3] * s; y += nor[v3 + 1] * s; z += nor[v3 + 2] * s;
+      x += infNor[v3] * s; y += infNor[v3 + 1] * s; z += infNor[v3 + 2] * s;
     } else if (tool === 'pinch') {
-      // rapproche les sommets du centre du brush (invert = écarte)
+      // rapproche les sommets du centre DANS LE PLAN TANGENT (composante normale retirée) :
+      // resserre la surface sans la percer en pointe. invert = écarte.
+      let dx = lcx - x, dy = lcy - y, dz = lcz - z;
+      const dn = dx * nx + dy * ny + dz * nz; dx -= dn * nx; dy -= dn * ny; dz -= dn * nz;
       const w = f * strength * PINCH_STR * sign;
-      x += (lcx - x) * w; y += (lcy - y) * w; z += (lcz - z) * w;
+      x += dx * w; y += dy * w; z += dz * w;
     } else if (tool === 'crease') {
-      // pincement vers le centre + déplacement le long de la normale moyenne (crête nette)
+      // pincement TANGENTIEL vers le centre + déplacement le long de la normale moyenne (crête nette)
+      let dx = lcx - x, dy = lcy - y, dz = lcz - z;
+      const dn = dx * nx + dy * ny + dz * nz; dx -= dn * nx; dy -= dn * ny; dz -= dn * nz;
       const wp = f * strength * PINCH_STR;
-      x += (lcx - x) * wp; y += (lcy - y) * wp; z += (lcz - z) * wp;
+      x += dx * wp; y += dy * wp; z += dz * wp;
       const s = maxOffset * f * sign;
       x += nx * s; y += ny * s; z += nz * s;
     }
@@ -440,7 +453,7 @@ function applySeamStroke(pos, nor, tool, size, intensity, invert, mask) {
   const alpha = state.alpha, an = alpha.n, agrid = alpha.grid;
   const flut = state.falloff, fn1 = flut.length - 1;
   const maxHeight = size * BUILD_HEIGHT * strength;
-  const accBuf = _accBuf, accStamp = _accStamp, accId = _accId;
+  const accBuf = _accBuf, accStamp = _accStamp, accId = _accId, infNor = _infNor;
 
   resetRange();
   _reps.forEach((r) => {
@@ -476,17 +489,23 @@ function applySeamStroke(pos, nor, tool, size, intensity, invert, mask) {
         x += (ax * li - x) * w; y += (ay * li - y) * w; z += (az * li - z) * w;
       }
     } else if (tool === 'inflate') {
-      const acc = accStamp[r] === accId ? accBuf[r] : 0;
+      const first = accStamp[r] !== accId;
+      if (first) { infNor[v3] = nor[v3]; infNor[v3 + 1] = nor[v3 + 1]; infNor[v3 + 2] = nor[v3 + 2]; }
+      const acc = first ? 0 : accBuf[r];
       const room = 1 / (1 + Math.abs(acc) / maxHeight);
       const s = maxOffset * f * sign * room;
       accBuf[r] = acc + s; accStamp[r] = accId;
-      x += nor[v3] * s; y += nor[v3 + 1] * s; z += nor[v3 + 2] * s;
+      x += infNor[v3] * s; y += infNor[v3 + 1] * s; z += infNor[v3 + 2] * s;
     } else if (tool === 'pinch') {
+      let dx = lcx - x, dy = lcy - y, dz = lcz - z;
+      const dn = dx * nx + dy * ny + dz * nz; dx -= dn * nx; dy -= dn * ny; dz -= dn * nz;
       const w = f * strength * PINCH_STR * sign;
-      x += (lcx - x) * w; y += (lcy - y) * w; z += (lcz - z) * w;
+      x += dx * w; y += dy * w; z += dz * w;
     } else if (tool === 'crease') {
+      let dx = lcx - x, dy = lcy - y, dz = lcz - z;
+      const dn = dx * nx + dy * ny + dz * nz; dx -= dn * nx; dy -= dn * ny; dz -= dn * nz;
       const wp = f * strength * PINCH_STR;
-      x += (lcx - x) * wp; y += (lcy - y) * wp; z += (lcz - z) * wp;
+      x += dx * wp; y += dy * wp; z += dz * wp;
       const s = maxOffset * f * sign;
       x += nx * s; y += ny * s; z += nz * s;
     }
