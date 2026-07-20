@@ -700,7 +700,7 @@ function retexPaintFrame() {
   const strength = Math.max(0.05, (state.params.intensity / 100) * 0.5);
   paintMaskDab(mesh, l, _retexPendingPt.clone(), radius, hardness, strength, _retexErase, RETEX_SIZE, mesh.matrixWorld);
   _retexPendingPt = null;
-  readMaskCanvas(l, RETEX_SIZE); recomposeRetex();
+  readMaskCanvas(l, RETEX_SIZE, state.targetMesh); recomposeRetex();
 }
 function retexScheduleFrame() { if (!_retexScheduled) { _retexScheduled = true; requestAnimationFrame(retexPaintFrame); } }
 
@@ -726,7 +726,7 @@ function endRetexPaint(e) {
   if (!_retexPainting) return;
   _retexPainting = false; state.controls.enabled = true;
   if (e && e.pointerId !== undefined) { try { dom.releasePointerCapture(e.pointerId); } catch (_) {} }
-  const l = retexPaintTarget(); if (l) { readMaskCanvas(l, RETEX_SIZE); recomposeRetex(); renderRetexLayers(); }
+  const l = retexPaintTarget(); if (l) { readMaskCanvas(l, RETEX_SIZE, state.targetMesh); recomposeRetex(); renderRetexLayers(); }
 }
 dom.addEventListener('pointerup', endRetexPaint);
 dom.addEventListener('pointercancel', endRetexPaint);

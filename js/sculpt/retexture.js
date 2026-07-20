@@ -306,35 +306,57 @@ const MASK_FRAG = `
   }
 `;
 
-// Dilatation du masque : étale l'alpha peint de quelques texels PAR-DESSUS les bords d'îlots UV.
-// Le masque étant peint directement dans l'atlas (gl_Position=uv), les texels pile sur une couture
-// ne sont pas couverts par la rasterisation -> liseré. On propage l'alpha MAX des voisins.
+// Couverture UV : 1 là où la géométrie couvre l'atlas (intérieur d'îlot), 0 dans les trous entre
+// îlots. Le VS rend en UV (gl_Position=uv*2-1). Mise en cache par géométrie (les UV ne bougent pas).
+const COVERAGE_VERT = `void main(){ gl_Position = vec4(uv * 2.0 - 1.0, 0.0, 1.0); }`;
+const COVERAGE_FRAG = `void main(){ gl_FragColor = vec4(1.0); }`;
+const _covCache = new WeakMap(); // geometry -> { size, rt }
+function uvCoverage(geometry, texSize) {
+  let e = _covCache.get(geometry);
+  if (e && e.size === texSize) return e.rt;
+  if (e) e.rt.dispose();
+  const r = state.renderer;
+  const rt = new THREE.WebGLRenderTarget(texSize, texSize); rt.texture.colorSpace = THREE.NoColorSpace;
+  const mat = new THREE.ShaderMaterial({ vertexShader: COVERAGE_VERT, fragmentShader: COVERAGE_FRAG, side: THREE.DoubleSide });
+  const m = new THREE.Mesh(geometry, mat); m.frustumCulled = false;
+  const scn = new THREE.Scene(); scn.add(m);
+  const prev = r.getRenderTarget(), pc = r.getClearColor(new THREE.Color()), pa = r.getClearAlpha(), pac = r.autoClear;
+  r.autoClear = true; r.setRenderTarget(rt); r.setClearColor(0x000000, 0); r.clear(); r.render(scn, new THREE.Camera());
+  r.setRenderTarget(prev); r.setClearColor(pc, pa); r.autoClear = pac; mat.dispose();
+  _covCache.set(geometry, { size: texSize, rt });
+  return rt;
+}
+
+// Dilatation du masque : étale l'alpha peint de quelques texels DANS LES TROUS entre îlots UV
+// (le masque peint dans l'atlas laisse les texels pile sur une couture non rasterisés -> liseré).
+// IMPORTANT : ne remplit QUE les texels HORS îlot (cover<0.5) ; les texels DANS un îlot gardent
+// leur vraie valeur — donc 0 si on a effacé (sinon les coutures « repeignaient » à l'effacement).
 const MASK_DILATE_FRAG = `
   precision highp float;
-  uniform sampler2D tex; uniform vec2 texel; varying vec2 vUv;
+  uniform sampler2D tex; uniform sampler2D cover; uniform vec2 texel; varying vec2 vUv;
   void main() {
-    vec4 c = texture2D(tex, vUv);
-    if (c.a > 0.001) { gl_FragColor = c; return; }     // déjà peint : inchangé
+    if (texture2D(cover, vUv).r > 0.5) { gl_FragColor = texture2D(tex, vUv); return; } // dans un îlot : valeur vraie
     float best = 0.0;
     for (int dy = -1; dy <= 1; dy++) for (int dx = -1; dx <= 1; dx++) {
       best = max(best, texture2D(tex, vUv + vec2(float(dx), float(dy)) * texel).a);
     }
-    gl_FragColor = vec4(best);                          // remplit depuis le voisin le plus révélé
+    gl_FragColor = vec4(best);                          // trou de couture : rempli depuis le voisin le plus révélé
   }
 `;
 // Ping-pong réutilisé (RT 2048² coûteuses à recréer chaque frame de peinture).
 let _mdil = null;
-function dilateMask(srcTexture, texSize, pad) {
+function dilateMask(srcTexture, coverTexture, texSize, pad) {
   const r = state.renderer;
   if (!_mdil || _mdil.size !== texSize) {
     if (_mdil) { _mdil.rtA.dispose(); _mdil.rtB.dispose(); _mdil.mat.dispose(); _mdil.geo.dispose(); }
     const mk = () => { const rt = new THREE.WebGLRenderTarget(texSize, texSize); rt.texture.colorSpace = THREE.NoColorSpace; return rt; };
-    const mat = new THREE.ShaderMaterial({ uniforms: { tex: { value: null }, texel: { value: new THREE.Vector2(1 / texSize, 1 / texSize) } }, vertexShader: FS_VERT, fragmentShader: MASK_DILATE_FRAG });
+    const mat = new THREE.ShaderMaterial({ uniforms: { tex: { value: null }, cover: { value: null }, texel: { value: new THREE.Vector2(1 / texSize, 1 / texSize) } }, vertexShader: FS_VERT, fragmentShader: MASK_DILATE_FRAG });
     const geo = new THREE.PlaneGeometry(2, 2);
     const scene = new THREE.Scene(); scene.add(new THREE.Mesh(geo, mat));
     _mdil = { size: texSize, rtA: mk(), rtB: mk(), mat, geo, scene, cam: new THREE.Camera() };
   }
   const { rtA, rtB, mat, scene, cam } = _mdil;
+  mat.uniforms.cover.value = coverTexture;
   const prev = r.getRenderTarget(), prevAC = r.autoClear; r.autoClear = true;
   let input = srcTexture, a = rtA, b = rtB, out = rtA;
   for (let i = 0; i < pad; i++) {
@@ -406,10 +428,11 @@ export function paintMaskDab(mesh, layer, worldPoint, radius, hardness, strength
 // Lit la RT du masque -> canvas (alpha = révélation) pour le compositing.
 // La RT d'accumulation reste intacte : on dilate dans un ping-pong séparé avant la lecture
 // (sinon la dilatation se cumulerait et « gonflerait » le masque à chaque frame).
-export function readMaskCanvas(layer, texSize = 2048, pad = 4) {
+export function readMaskCanvas(layer, texSize = 2048, mesh = null, pad = 4) {
   if (!layer._maskRT) return null;
   const renderer = state.renderer;
-  const readRT = pad > 0 ? dilateMask(layer._maskRT.texture, texSize, pad) : layer._maskRT;
+  const cover = (pad > 0 && mesh) ? uvCoverage(mesh.geometry, texSize) : null;
+  const readRT = cover ? dilateMask(layer._maskRT.texture, cover.texture, texSize, pad) : layer._maskRT;
   const buf = new Uint8Array(texSize * texSize * 4);
   renderer.readRenderTargetPixels(readRT, 0, 0, texSize, texSize, buf);
   const cv = layer.mask && layer.mask.width === texSize ? layer.mask : Object.assign(document.createElement('canvas'), { width: texSize, height: texSize });
