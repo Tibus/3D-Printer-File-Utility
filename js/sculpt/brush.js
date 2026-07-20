@@ -366,20 +366,23 @@ function applyFastStroke(pos, nor, tool, size, intensity, invert, neighbors, mas
       accBuf[v] = acc + s; accStamp[v] = accId;
       x += infNor[v3] * s; y += infNor[v3 + 1] * s; z += infNor[v3 + 2] * s;
     } else if (tool === 'pinch') {
-      // rapproche les sommets du centre DANS LE PLAN TANGENT (composante normale retirée) :
-      // resserre la surface sans la percer en pointe. invert = écarte.
-      let dx = lcx - x, dy = lcy - y, dz = lcz - z;
-      const dn = dx * nx + dy * ny + dz * nz; dx -= dn * nx; dy -= dn * ny; dz -= dn * nz;
-      const w = f * strength * PINCH_STR * sign;
-      x += dx * w; y += dy * w; z += dz * w;
+      // rapproche les sommets du centre du brush, PLAFONNÉ (asymptotique) pour ne pas s'effondrer
+      // en pointe sur un stroke lent. invert = écarte. acc = distance déjà pincée.
+      const acc = accStamp[v] === accId ? accBuf[v] : 0;
+      const room = 1 / (1 + acc / (size * 0.3));
+      const w = f * strength * PINCH_STR * sign * room;
+      const mx = (lcx - x) * w, my = (lcy - y) * w, mz = (lcz - z) * w;
+      accBuf[v] = acc + Math.sqrt(mx * mx + my * my + mz * mz); accStamp[v] = accId;
+      x += mx; y += my; z += mz;
     } else if (tool === 'crease') {
-      // pincement TANGENTIEL vers le centre + déplacement le long de la normale moyenne (crête nette)
-      let dx = lcx - x, dy = lcy - y, dz = lcz - z;
-      const dn = dx * nx + dy * ny + dz * nz; dx -= dn * nx; dy -= dn * ny; dz -= dn * nz;
-      const wp = f * strength * PINCH_STR;
-      x += dx * wp; y += dy * wp; z += dz * wp;
-      const s = maxOffset * f * sign;
-      x += nx * s; y += ny * s; z += nz * s;
+      // pincement vers le centre + déplacement le long de la normale moyenne (crête), plafonnés
+      const acc = accStamp[v] === accId ? accBuf[v] : 0;
+      const room = 1 / (1 + acc / (size * 0.3));
+      const wp = f * strength * PINCH_STR * room;
+      const s = maxOffset * f * sign * room;
+      const mx = (lcx - x) * wp + nx * s, my = (lcy - y) * wp + ny * s, mz = (lcz - z) * wp + nz * s;
+      accBuf[v] = acc + Math.sqrt(mx * mx + my * my + mz * mz); accStamp[v] = accId;
+      x += mx; y += my; z += mz;
     }
 
     if (mask) { const w = 1 - mask[v]; x = ox + (x - ox) * w; y = oy + (y - oy) * w; z = oz + (z - oz) * w; } // influence partielle
@@ -497,17 +500,20 @@ function applySeamStroke(pos, nor, tool, size, intensity, invert, mask) {
       accBuf[r] = acc + s; accStamp[r] = accId;
       x += infNor[v3] * s; y += infNor[v3 + 1] * s; z += infNor[v3 + 2] * s;
     } else if (tool === 'pinch') {
-      let dx = lcx - x, dy = lcy - y, dz = lcz - z;
-      const dn = dx * nx + dy * ny + dz * nz; dx -= dn * nx; dy -= dn * ny; dz -= dn * nz;
-      const w = f * strength * PINCH_STR * sign;
-      x += dx * w; y += dy * w; z += dz * w;
+      const acc = accStamp[r] === accId ? accBuf[r] : 0;
+      const room = 1 / (1 + acc / (size * 0.3));
+      const w = f * strength * PINCH_STR * sign * room;
+      const mx = (lcx - x) * w, my = (lcy - y) * w, mz = (lcz - z) * w;
+      accBuf[r] = acc + Math.sqrt(mx * mx + my * my + mz * mz); accStamp[r] = accId;
+      x += mx; y += my; z += mz;
     } else if (tool === 'crease') {
-      let dx = lcx - x, dy = lcy - y, dz = lcz - z;
-      const dn = dx * nx + dy * ny + dz * nz; dx -= dn * nx; dy -= dn * ny; dz -= dn * nz;
-      const wp = f * strength * PINCH_STR;
-      x += dx * wp; y += dy * wp; z += dz * wp;
-      const s = maxOffset * f * sign;
-      x += nx * s; y += ny * s; z += nz * s;
+      const acc = accStamp[r] === accId ? accBuf[r] : 0;
+      const room = 1 / (1 + acc / (size * 0.3));
+      const wp = f * strength * PINCH_STR * room;
+      const s = maxOffset * f * sign * room;
+      const mx = (lcx - x) * wp + nx * s, my = (lcy - y) * wp + ny * s, mz = (lcz - z) * wp + nz * s;
+      accBuf[r] = acc + Math.sqrt(mx * mx + my * my + mz * mz); accStamp[r] = accId;
+      x += mx; y += my; z += mz;
     }
 
     if (mask) { const w = 1 - mask[r]; x = ox + (x - ox) * w; y = oy + (y - oy) * w; z = oz + (z - oz) * w; }
