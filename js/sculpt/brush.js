@@ -372,7 +372,16 @@ function applyFastStroke(pos, nor, tool, size, intensity, invert, neighbors, mas
       const acc = accStamp[v] === accId ? accBuf[v] : 0;
       const room = 1 / (1 + acc / (size * 0.3));
       const w = fp * strength * PINCH_STR * sign * room;
-      const mx = (lcx - x) * w, my = (lcy - y) * w, mz = (lcz - z) * w;
+      let mx = (lcx - x) * w, my = (lcy - y) * w, mz = (lcz - z) * w;
+      // Lissage simultané (relaxation laplacienne) : les sommets suivent aussi la moyenne de leurs
+      // voisins -> évite l'entassement/dégénérescence pendant le pincement (façon Nomad).
+      const nb = neighbors[v], len = nb ? nb.length : 0;
+      if (len) {
+        let ax = 0, ay = 0, az = 0;
+        for (let k = 0; k < len; k++) { const n3 = nb[k] * 3; ax += pos[n3]; ay += pos[n3 + 1]; az += pos[n3 + 2]; }
+        const li = 1 / len, sw = fp * strength * 0.6;
+        mx += (ax * li - x) * sw; my += (ay * li - y) * sw; mz += (az * li - z) * sw;
+      }
       accBuf[v] = acc + Math.sqrt(mx * mx + my * my + mz * mz); accStamp[v] = accId;
       x += mx; y += my; z += mz;
     } else if (tool === 'crease') {
@@ -506,7 +515,14 @@ function applySeamStroke(pos, nor, tool, size, intensity, invert, mask) {
       const acc = accStamp[r] === accId ? accBuf[r] : 0;
       const room = 1 / (1 + acc / (size * 0.3));
       const w = fp * strength * PINCH_STR * sign * room;
-      const mx = (lcx - x) * w, my = (lcy - y) * w, mz = (lcz - z) * w;
+      let mx = (lcx - x) * w, my = (lcy - y) * w, mz = (lcz - z) * w;
+      const nb = smoothNeighbors(r), len = nb ? nb.length : 0;
+      if (len) {
+        let ax = 0, ay = 0, az = 0;
+        for (let k = 0; k < len; k++) { const n3 = nb[k] * 3; ax += pos[n3]; ay += pos[n3 + 1]; az += pos[n3 + 2]; }
+        const li = 1 / len, sw = fp * strength * 0.6;
+        mx += (ax * li - x) * sw; my += (ay * li - y) * sw; mz += (az * li - z) * sw;
+      }
       accBuf[r] = acc + Math.sqrt(mx * mx + my * my + mz * mz); accStamp[r] = accId;
       x += mx; y += my; z += mz;
     } else if (tool === 'crease') {
