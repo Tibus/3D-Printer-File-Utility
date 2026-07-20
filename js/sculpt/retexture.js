@@ -9,7 +9,7 @@
 import * as THREE from 'three';
 import { state } from './state.js';
 
-let _pendingCam = null; // { viewProj, pos } capturés au dernier screenshot
+let _pendingCam = null; // { camLocal, proj } : caméra du dernier screenshot, en ESPACE OBJET
 
 export const CAPTURE_SIZE = 1024; // image de capture CARRÉE (1:1) — important pour l'IA
 
@@ -64,10 +64,14 @@ export function captureView() {
   const rt = new THREE.WebGLRenderTarget(CAPTURE_SIZE, CAPTURE_SIZE);
   rt.texture.colorSpace = THREE.SRGBColorSpace;
   const prevRT = renderer.getRenderTarget();
+  const prevClear = renderer.getClearColor(new THREE.Color()); const prevAlpha = renderer.getClearAlpha();
+  const prevBg = state.scene.background; state.scene.background = null; // fond transparent : pas de fond de scène capturé
   renderer.setRenderTarget(rt);
-  renderer.setClearColor(0x0e0e1a, 1); renderer.clear();
+  renderer.setClearColor(0x000000, 0); renderer.clear(); // alpha 0 -> PNG à fond transparent
   renderer.render(state.scene, sq);
   renderer.setRenderTarget(prevRT);
+  renderer.setClearColor(prevClear, prevAlpha);
+  state.scene.background = prevBg;
   for (const s of swapped) { s.o.material.dispose(); s.o.material = s.mat; }
   for (const o of hidden) o.visible = true;
   renderer.render(state.scene, state.camera); // restaure l'affichage écran
@@ -81,13 +85,19 @@ export function captureView() {
   for (let y = 0; y < CAPTURE_SIZE; y++) { const s = (CAPTURE_SIZE - 1 - y) * row, d = y * row; im.data.set(buf.subarray(s, s + row), d); }
   ctx.putImageData(im, 0, 0);
 
-  const viewProj = new THREE.Matrix4().multiplyMatrices(sq.projectionMatrix, sq.matrixWorldInverse);
-  // On mémorise AUSSI la pose (matrixWorld) de l'objet actif au moment de la capture : le
-  // screenshot correspond à cette pose. Si l'objet est ensuite déplacé (gizmo) avant l'import,
-  // la reprojection doit utiliser la pose de capture, pas la pose courante.
-  let meshMatrix = null;
-  if (state.targetMesh) { state.targetMesh.updateMatrixWorld(true); meshMatrix = state.targetMesh.matrixWorld.clone(); }
-  _pendingCam = { cam: sq, viewProj: viewProj.clone(), pos: sq.position.clone(), meshMatrix };
+  // Caméra mémorisée EN ESPACE OBJET (attachée à l'objet) : on stocke sa pose RELATIVE à l'objet
+  // (camLocal = Mo⁻¹·camWorld) + sa projection. À la reprojection on reconstruit la caméra par
+  // rapport à la pose COURANTE de l'objet (camWorld = Mo·camLocal). La relation caméra↔objet est
+  // ainsi invariante : rotation / échelle / déplacement au gizmo (avant OU après la capture) ne
+  // décalent plus la projection, puisque tout est exprimé dans le repère de l'objet.
+  let camLocal = null;
+  if (state.targetMesh) {
+    state.targetMesh.updateMatrixWorld(true);
+    camLocal = state.targetMesh.matrixWorld.clone().invert().multiply(sq.matrixWorld);
+  } else {
+    camLocal = sq.matrixWorld.clone(); // pas d'objet : la caméra reste en monde (Mo = identité)
+  }
+  _pendingCam = { camLocal, proj: sq.projectionMatrix.clone() };
   return cv.toDataURL('image/png');
 }
 
@@ -160,28 +170,44 @@ const DEPTH_FRAG = `
 // Occlusion : seules les faces RÉELLEMENT visibles de la caméra capturée sont peintes (passe
 // de profondeur préalable depuis cette caméra).
 export function reprojectToUV(image, mesh, texSize = 2048, cam = _pendingCam, pad = 8) {
-  if (!cam || !cam.cam) throw new Error('Capture la vue d’abord (bouton 📷).');
+  if (!cam || !cam.camLocal) throw new Error('Capture la vue d’abord (bouton 📷).');
   const renderer = state.renderer;
   const prevRT0 = renderer.getRenderTarget();
   const prevClear = renderer.getClearColor(new THREE.Color()); const prevAlpha = renderer.getClearAlpha();
-  // Pose de l'objet À LA CAPTURE (le screenshot y correspond) ; fallback = pose courante.
-  const meshMatrix = cam.meshMatrix || mesh.matrixWorld;
 
-  // 1) Passe de profondeur depuis la caméra capturée -> distance de la surface visible.
+  // Caméra ATTACHÉE À L'OBJET : reconstruite par rapport à la pose COURANTE (camWorld = Mo·camLocal).
+  // Le mesh est reprojeté à cette même pose Mo -> relation caméra↔objet identique à la capture, quel
+  // que soit le gizmo (avant/après). Le screenshot, pris à une autre pose monde, reste valide : seule
+  // compte la géométrie RELATIVE à la caméra.
+  mesh.updateMatrixWorld(true);
+  const meshMatrix = mesh.matrixWorld.clone();
+  const camWorld = meshMatrix.clone().multiply(cam.camLocal);
+  const camWorldInv = camWorld.clone().invert();
+  const camViewProj = cam.proj.clone().multiply(camWorldInv); // P · camWorld⁻¹
+  const camPos = new THREE.Vector3().setFromMatrixPosition(camWorld);
+  // Caméra reconstruite pour la passe de profondeur (matrices figées).
+  const rcam = new THREE.Camera();
+  rcam.matrixAutoUpdate = false; rcam.matrixWorldAutoUpdate = false;
+  rcam.matrixWorld.copy(camWorld); rcam.matrixWorldInverse.copy(camWorldInv); rcam.projectionMatrix.copy(cam.proj);
+
+  // 1) Passe de profondeur depuis la caméra reconstruite -> distance de la surface visible.
   const DSZ = 1024;
   const depthRT = new THREE.WebGLRenderTarget(DSZ, DSZ, { type: THREE.HalfFloatType });
   const depthMat = new THREE.ShaderMaterial({ vertexShader: DEPTH_VERT, fragmentShader: DEPTH_FRAG, side: THREE.DoubleSide });
   const dscn = new THREE.Scene();
   const dmesh = new THREE.Mesh(mesh.geometry, depthMat);
-  dmesh.matrixAutoUpdate = false; dmesh.matrixWorldAutoUpdate = false; dmesh.matrixWorld.copy(meshMatrix); // pose de capture
+  dmesh.matrixAutoUpdate = false; dmesh.matrixWorldAutoUpdate = false; dmesh.matrixWorld.copy(meshMatrix); // pose courante
+  dmesh.frustumCulled = false; // le VS rend en espace UV -> ne pas culler sur la bbox monde
   dscn.add(dmesh);
   renderer.setRenderTarget(depthRT); renderer.setClearColor(0x000000, 1); renderer.clear();
-  renderer.render(dscn, cam.cam);
+  renderer.render(dscn, rcam);
   renderer.setRenderTarget(prevRT0);
 
-  // biais d'occlusion ~ 1% de la taille de l'objet (évite l'auto-occlusion / z-fighting)
+  // biais d'occlusion ~ 1% de la taille de l'objet EN MONDE (la profondeur est en unités monde ->
+  // tenir compte de l'échelle courante, sinon un objet scalé au gizmo a un biais trop faible -> trous).
   mesh.geometry.computeBoundingBox(); const bs = new THREE.Vector3(); mesh.geometry.boundingBox.getSize(bs);
-  const depthBias = Math.max(bs.x, bs.y, bs.z) * 0.01;
+  const _sc = new THREE.Vector3(); meshMatrix.decompose(new THREE.Vector3(), new THREE.Quaternion(), _sc);
+  const depthBias = Math.max(bs.x * Math.abs(_sc.x), bs.y * Math.abs(_sc.y), bs.z * Math.abs(_sc.z)) * 0.01;
 
   const srcTex = new THREE.Texture(image);
   srcTex.colorSpace = THREE.SRGBColorSpace; srcTex.flipY = true;
@@ -189,7 +215,7 @@ export function reprojectToUV(image, mesh, texSize = 2048, cam = _pendingCam, pa
   srcTex.needsUpdate = true;
 
   const mat = new THREE.ShaderMaterial({
-    uniforms: { camViewProj: { value: cam.viewProj }, camPos: { value: cam.pos }, projImage: { value: srcTex }, camDepth: { value: depthRT.texture }, depthBias: { value: depthBias } },
+    uniforms: { camViewProj: { value: camViewProj }, camPos: { value: camPos }, projImage: { value: srcTex }, camDepth: { value: depthRT.texture }, depthBias: { value: depthBias } },
     vertexShader: VERT, fragmentShader: FRAG, side: THREE.DoubleSide,
   });
 
@@ -197,7 +223,8 @@ export function reprojectToUV(image, mesh, texSize = 2048, cam = _pendingCam, pa
   rt.texture.colorSpace = THREE.SRGBColorSpace;
   const scn = new THREE.Scene();
   const proj = new THREE.Mesh(mesh.geometry, mat);
-  proj.matrixAutoUpdate = false; proj.matrixWorldAutoUpdate = false; proj.matrixWorld.copy(meshMatrix); // pose de capture
+  proj.matrixAutoUpdate = false; proj.matrixWorldAutoUpdate = false; proj.matrixWorld.copy(meshMatrix); // pose courante
+  proj.frustumCulled = false; // le VS rend en espace UV (gl_Position=uv*2-1) -> ne jamais culler
   scn.add(proj);
 
   renderer.setRenderTarget(rt);
@@ -284,13 +311,58 @@ const MASK_FRAG = `
   }
 `;
 
-// RT persistante du masque d'un calque (créée + vidée à 0 au 1er usage : tout masqué).
-function ensureLayerMaskRT(layer, texSize) {
+// Dilatation du masque : étale l'alpha peint de quelques texels PAR-DESSUS les bords d'îlots UV.
+// Le masque étant peint directement dans l'atlas (gl_Position=uv), les texels pile sur une couture
+// ne sont pas couverts par la rasterisation -> liseré. On propage l'alpha MAX des voisins.
+const MASK_DILATE_FRAG = `
+  precision highp float;
+  uniform sampler2D tex; uniform vec2 texel; varying vec2 vUv;
+  void main() {
+    vec4 c = texture2D(tex, vUv);
+    if (c.a > 0.001) { gl_FragColor = c; return; }     // déjà peint : inchangé
+    float best = 0.0;
+    for (int dy = -1; dy <= 1; dy++) for (int dx = -1; dx <= 1; dx++) {
+      best = max(best, texture2D(tex, vUv + vec2(float(dx), float(dy)) * texel).a);
+    }
+    gl_FragColor = vec4(best);                          // remplit depuis le voisin le plus révélé
+  }
+`;
+// Ping-pong réutilisé (RT 2048² coûteuses à recréer chaque frame de peinture).
+let _mdil = null;
+function dilateMask(srcTexture, texSize, pad) {
+  const r = state.renderer;
+  if (!_mdil || _mdil.size !== texSize) {
+    if (_mdil) { _mdil.rtA.dispose(); _mdil.rtB.dispose(); _mdil.mat.dispose(); _mdil.geo.dispose(); }
+    const mk = () => { const rt = new THREE.WebGLRenderTarget(texSize, texSize); rt.texture.colorSpace = THREE.NoColorSpace; return rt; };
+    const mat = new THREE.ShaderMaterial({ uniforms: { tex: { value: null }, texel: { value: new THREE.Vector2(1 / texSize, 1 / texSize) } }, vertexShader: FS_VERT, fragmentShader: MASK_DILATE_FRAG });
+    const geo = new THREE.PlaneGeometry(2, 2);
+    const scene = new THREE.Scene(); scene.add(new THREE.Mesh(geo, mat));
+    _mdil = { size: texSize, rtA: mk(), rtB: mk(), mat, geo, scene, cam: new THREE.Camera() };
+  }
+  const { rtA, rtB, mat, scene, cam } = _mdil;
+  const prev = r.getRenderTarget(), prevAC = r.autoClear; r.autoClear = true;
+  let input = srcTexture, a = rtA, b = rtB, out = rtA;
+  for (let i = 0; i < pad; i++) {
+    mat.uniforms.tex.value = input; r.setRenderTarget(a); r.render(scene, cam);
+    input = a.texture; out = a; const t = a; a = b; b = t;
+  }
+  r.setRenderTarget(prev); r.autoClear = prevAC;
+  return out;
+}
+
+// RT persistante du masque d'un calque, créée + initialisée au 1er usage.
+//  - initReveal=false : tout MASQUÉ (alpha 0) -> on peint pour révéler (défaut génération).
+//  - initReveal=true  : tout RÉVÉLÉ (alpha 1) -> on efface (Alt) pour cacher. Utilisé pour la
+//    texture de base (ne doit jamais disparaître au 1er clic) et quand le 1er geste est un effacement.
+function ensureLayerMaskRT(layer, texSize, initReveal) {
   if (!layer._maskRT) {
     layer._maskRT = new THREE.WebGLRenderTarget(texSize, texSize);
     layer._maskRT.texture.colorSpace = THREE.NoColorSpace;
     const r = state.renderer, prev = r.getRenderTarget();
-    r.setRenderTarget(layer._maskRT); r.setClearColor(0x000000, 0); r.clear(); r.setRenderTarget(prev);
+    const prevC = r.getClearColor(new THREE.Color()), prevA = r.getClearAlpha();
+    r.setRenderTarget(layer._maskRT);
+    r.setClearColor(initReveal ? 0xffffff : 0x000000, initReveal ? 1 : 0); r.clear();
+    r.setRenderTarget(prev); r.setClearColor(prevC, prevA);
   }
   return layer._maskRT;
 }
@@ -299,7 +371,9 @@ function ensureLayerMaskRT(layer, texSize) {
 // l'alpha dans la RT du calque selon la distance 3D au pinceau.
 export function paintMaskDab(mesh, layer, worldPoint, radius, hardness, strength, erase, texSize = 2048, meshMatrix = null) {
   const renderer = state.renderer;
-  ensureLayerMaskRT(layer, texSize);
+  // Base : toujours révélée au départ. Autre calque : révélé si le 1er geste est un effacement
+  // (sinon effacer sur un masque tout-à-0 ne ferait rien), masqué sinon (on peint pour révéler).
+  ensureLayerMaskRT(layer, texSize, !!layer._isBase || erase);
   const mat = new THREE.ShaderMaterial({
     uniforms: { brushPos: { value: worldPoint }, radius: { value: radius }, hardness: { value: hardness }, strength: { value: strength }, camPos: { value: state.camera.position.clone() } },
     vertexShader: VERT, fragmentShader: MASK_FRAG, side: THREE.DoubleSide,
@@ -313,20 +387,29 @@ export function paintMaskDab(mesh, layer, worldPoint, radius, hardness, strength
   const scn = new THREE.Scene();
   const m = new THREE.Mesh(mesh.geometry, mat);
   m.matrixAutoUpdate = false; m.matrixWorldAutoUpdate = false; m.matrixWorld.copy(meshMatrix || mesh.matrixWorld);
+  m.frustumCulled = false; // rendu en espace UV via caméra factice -> ne pas culler (objet loin de l'origine)
   scn.add(m);
   const prev = renderer.getRenderTarget();
+  // autoClear=false : chaque dab s'ACCUMULE dans la RT (blending additif/soustractif) au lieu
+  // d'effacer les dabs précédents. La RT n'est vidée qu'une fois, à sa création (ensureLayerMaskRT)
+  // -> le masque n'est « remis à zéro » qu'au tout premier coup de pinceau sur ce calque.
+  const prevAutoClear = renderer.autoClear; renderer.autoClear = false;
   renderer.setRenderTarget(layer._maskRT);
   renderer.render(scn, new THREE.Camera());
   renderer.setRenderTarget(prev);
+  renderer.autoClear = prevAutoClear;
   mat.dispose();
 }
 
 // Lit la RT du masque -> canvas (alpha = révélation) pour le compositing.
-export function readMaskCanvas(layer, texSize = 2048) {
+// La RT d'accumulation reste intacte : on dilate dans un ping-pong séparé avant la lecture
+// (sinon la dilatation se cumulerait et « gonflerait » le masque à chaque frame).
+export function readMaskCanvas(layer, texSize = 2048, pad = 4) {
   if (!layer._maskRT) return null;
   const renderer = state.renderer;
+  const readRT = pad > 0 ? dilateMask(layer._maskRT.texture, texSize, pad) : layer._maskRT;
   const buf = new Uint8Array(texSize * texSize * 4);
-  renderer.readRenderTargetPixels(layer._maskRT, 0, 0, texSize, texSize, buf);
+  renderer.readRenderTargetPixels(readRT, 0, 0, texSize, texSize, buf);
   const cv = layer.mask && layer.mask.width === texSize ? layer.mask : Object.assign(document.createElement('canvas'), { width: texSize, height: texSize });
   const ctx = cv.getContext('2d'); const img = ctx.createImageData(texSize, texSize); const d = img.data;
   for (let i = 0; i < texSize * texSize; i++) { const a = buf[i * 4]; d[i * 4] = 255; d[i * 4 + 1] = 255; d[i * 4 + 2] = 255; d[i * 4 + 3] = a; }
@@ -351,21 +434,32 @@ const NANO_SYSTEM = [
 export async function generateNanoBanana(imageDataURL, prompt, apiKey, model = NANO_MODEL) {
   const b64 = imageDataURL.split(',')[1];
   const mime = (imageDataURL.match(/^data:([^;]+);/) || [, 'image/png'])[1];
+  // Le modèle image gère mal systemInstruction -> on préfixe le prompt système au texte.
+  // responseModalities force la sortie IMAGE (sinon le modèle peut ne renvoyer que du texte).
+  const fullText = `${NANO_SYSTEM}\n\nEdit instruction: ${prompt}`;
   const body = {
-    systemInstruction: { parts: [{ text: NANO_SYSTEM }] },
-    contents: [{ parts: [{ text: prompt }, { inline_data: { mime_type: mime, data: b64 } }] }],
+    contents: [{ parts: [{ text: fullText }, { inline_data: { mime_type: mime, data: b64 } }] }],
+    generationConfig: { responseModalities: ['IMAGE', 'TEXT'] },
   };
   const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
   });
   if (!res.ok) { const t = await res.text().catch(() => ''); throw new Error(`API ${res.status} ${t.slice(0, 300)}`); }
   const data = await res.json();
-  const parts = (data.candidates && data.candidates[0] && data.candidates[0].content && data.candidates[0].content.parts) || [];
+  const cand = data.candidates && data.candidates[0];
+  const parts = (cand && cand.content && cand.content.parts) || [];
   const p = parts.find((x) => x.inlineData || x.inline_data);
-  if (!p) { const txt = parts.map((x) => x.text).filter(Boolean).join(' '); throw new Error('Pas d’image renvoyée' + (txt ? ` (${txt.slice(0, 200)})` : '')); }
+  if (!p) {
+    const txt = parts.map((x) => x.text).filter(Boolean).join(' ');
+    const fr = cand && cand.finishReason ? ` [${cand.finishReason}]` : '';
+    const pf = data.promptFeedback ? ` ${JSON.stringify(data.promptFeedback).slice(0, 150)}` : '';
+    throw new Error('Pas d’image renvoyée' + fr + (txt ? ` — ${txt.slice(0, 200)}` : '') + pf);
+  }
   const inl = p.inlineData || p.inline_data;
   return `data:${inl.mimeType || inl.mime_type || 'image/png'};base64,${inl.data}`;
 }
+
+"Unable to show the generated image. The model could not generate the image based on the prompt provided. You will not be charged for this request. Try rephrasing the prompt. If you think this was an error, [send feedback](https://ai.google.dev/gemini-api/docs/troubleshooting)."
 
 // Applique un canvas comme map de couleur de l'objet (baseMat + affichage dérivé).
 export function applyTextureCanvas(mesh, canvas) {

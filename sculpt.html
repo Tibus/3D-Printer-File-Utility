@@ -83,6 +83,9 @@
     <button class="tool-btn" data-tool="retexture" title="Retexturing : compositing de la texture couleur (calques importés / reprojetés)">
       <span class="tool-emoji">🎨</span> Retexture
     </button>
+    <button class="tool-btn" data-tool="other" title="Opérations sur le maillage (remesh, réparer, décimer, évider, orienter…)">
+      <span class="tool-emoji">🧰</span> Autres
+    </button>
   </div>
 
   <div id="mask-panel" style="display:none; flex-direction:column; gap:10px;">
@@ -134,7 +137,7 @@
     <button id="redo-btn" class="control-btn" title="Rétablir (Ctrl/Cmd+Maj+Z)" disabled>↷ Rétablir</button>
   </div>
 
-  <div class="param">
+  <div class="param" data-tools="sculpt mask retexture">
     <label>
       <span class="param-label">Taille</span>
       <input type="range" id="size-range" min="0.02" max="0.6" value="0.12" step="0.005">
@@ -142,7 +145,7 @@
     </label>
   </div>
 
-  <div class="param">
+  <div class="param" data-tools="sculpt mask retexture">
     <label>
       <span class="param-label">Intensité</span>
       <input type="range" id="intensity-range" min="1" max="200" value="100" step="1">
@@ -150,7 +153,7 @@
     </label>
   </div>
 
-  <div class="param">
+  <div class="param" data-tools="sculpt mask retexture">
     <label>
       <span class="param-label">Dureté</span>
       <input type="range" id="hardness-range" min="0" max="100" value="50" step="1">
@@ -158,7 +161,7 @@
     </label>
   </div>
 
-  <div class="alpha-row">
+  <div class="alpha-row" data-tools="sculpt mask retexture">
     <span class="param-label">Falloff</span>
     <div class="alpha-controls">
       <canvas id="falloff-preview" width="60" height="30" title="Courbe de falloff (centre → bord)"></canvas>
@@ -168,7 +171,7 @@
     </div>
   </div>
 
-  <div class="alpha-row">
+  <div class="alpha-row" data-tools="sculpt mask">
     <span class="param-label">Alpha</span>
     <div class="alpha-controls">
       <canvas id="alpha-preview" width="36" height="36" title="Alpha courant"></canvas>
@@ -181,11 +184,11 @@
   </div>
 
   <div class="checks">
-    <label class="check" id="invert-row">
+    <label class="check" id="invert-row" data-tools="draw">
       <input type="checkbox" id="invert-check">
       <span>Inverser (retirer)</span>
     </label>
-    <label class="check">
+    <label class="check" data-tools="sculpt">
       <input type="checkbox" id="symmetry-check">
       <span>Symétrie X</span>
     </label>
@@ -206,24 +209,24 @@
     </label>
   </div>
 
-  <button id="subdivide-btn" class="control-btn">🔺 Subdiviser (ajouter du détail)</button>
-  <button id="decimate-btn" class="control-btn" title="Réduit le nombre de triangles (low-poly) en gardant la forme et la texture (QEM)">🔻 Décimer (low-poly)</button>
+  <button id="subdivide-btn" class="control-btn" data-tools="other">🔺 Subdiviser (ajouter du détail)</button>
+  <button id="decimate-btn" class="control-btn" data-tools="other" title="Réduit le nombre de triangles (low-poly) en gardant la forme et la texture (QEM)">🔻 Décimer (low-poly)</button>
 
-  <div class="param">
+  <div class="param" data-tools="other">
     <label>
       <span class="param-label">Garder (triangles)</span>
       <input type="range" id="decimate-range" min="2" max="90" value="25" step="1">
       <span class="param-val" id="decimate-val">25 %</span>
     </label>
   </div>
-  <button id="separate-btn" class="control-btn">🧩 Séparer les parties indépendantes</button>
-  <button id="remesh-btn" class="control-btn" title="Reconstruit une topologie propre et watertight (répare les meshes IA). Conserve la texture.">🧊 Voxel remesh (nettoyer)</button>
-  <button id="repair-btn" class="control-btn" title="Souder les sommets, supprimer les bouts flottants, boucher les trous (garde la topologie)">🩹 Réparer le maillage</button>
-  <button id="hollow-btn" class="control-btn" title="Évide l'objet en une coque d'épaisseur donnée (économise le filament)">🥚 Évider (coque)</button>
-  <button id="wallcheck-btn" class="control-btn" title="Colore en rouge les parois plus fines que l'épaisseur choisie. Reclique pour revenir.">📏 Vérifier l'épaisseur</button>
-  <button id="orient-btn" class="control-btn" title="Oriente l'objet pour l'impression : minimise les surplombs, pose la meilleure base au sol">🧭 Auto-orienter</button>
+  <button id="separate-btn" class="control-btn" data-tools="other">🧩 Séparer les parties indépendantes</button>
+  <button id="remesh-btn" class="control-btn" data-tools="other" title="Reconstruit une topologie propre et watertight (répare les meshes IA). Conserve la texture.">🧊 Voxel remesh (nettoyer)</button>
+  <button id="repair-btn" class="control-btn" data-tools="other" title="Souder les sommets, supprimer les bouts flottants, boucher les trous (garde la topologie)">🩹 Réparer le maillage</button>
+  <button id="hollow-btn" class="control-btn" data-tools="other" title="Évide l'objet en une coque d'épaisseur donnée (économise le filament)">🥚 Évider (coque)</button>
+  <button id="wallcheck-btn" class="control-btn" data-tools="other" title="Colore en rouge les parois plus fines que l'épaisseur choisie. Reclique pour revenir.">📏 Vérifier l'épaisseur</button>
+  <button id="orient-btn" class="control-btn" data-tools="other" title="Oriente l'objet pour l'impression : minimise les surplombs, pose la meilleure base au sol">🧭 Auto-orienter</button>
 
-  <div class="param">
+  <div class="param" data-tools="other">
     <label>
       <span class="param-label">Épaisseur paroi</span>
       <input type="range" id="hollow-range" min="1" max="20" value="4" step="1">
@@ -231,14 +234,14 @@
     </label>
   </div>
 
-  <div class="param">
+  <div class="param" data-tools="other">
     <label>
       <span class="param-label">Taille réelle (mm)</span>
       <input type="number" id="realsize-mm" min="0" step="1" value="" placeholder="—" style="width:64px;">
     </label>
   </div>
 
-  <div class="param">
+  <div class="param" data-tools="other">
     <label>
       <span class="param-label">Résolution remesh</span>
       <input type="range" id="remesh-range" min="24" max="220" value="80" step="4">
@@ -246,7 +249,7 @@
     </label>
   </div>
 
-  <div class="param">
+  <div class="param" data-tools="split">
     <label>
       <span class="param-label">Mode coupe</span>
       <select id="split-mode" title="Précise (booléen Manifold) : robuste + watertight. Rapide (CDT) : plus rapide mais quelques soucis sur low-poly.">
@@ -256,7 +259,7 @@
     </label>
   </div>
 
-  <div class="param">
+  <div class="param" data-tools="split mask">
     <label>
       <span class="param-label">Détail coupe</span>
       <input type="range" id="cutdetail-range" min="1" max="24" value="10" step="1">

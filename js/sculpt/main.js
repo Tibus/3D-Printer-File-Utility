@@ -385,7 +385,7 @@ restoreAutosave();
 dom.addEventListener('pointerdown', (e) => {
   if (e.button !== 0 || !state.targetMesh || !state.targetMesh.visible) return;
   if (radiusMode) return; // réglage du rayon en cours (X maintenu)
-  if (state.params.tool === 'gizmo' || state.params.tool === 'retexture') return; // pas de sculpt
+  if (state.params.tool === 'gizmo' || state.params.tool === 'retexture' || state.params.tool === 'other') return; // pas de sculpt
   if (state.params.tool === 'split') { startLasso(e); return; }
   setMouseFromEvent(e);
   const hit = raycastSurface();
@@ -421,7 +421,7 @@ function processMove() {
   pendingMods = null;
 
   if (!sculpting) {
-    if (state.params.tool === 'split' || state.params.tool === 'gizmo' || state.params.tool === 'retexture') { hideBrushCursor(); return; }
+    if (state.params.tool === 'split' || state.params.tool === 'gizmo' || state.params.tool === 'retexture' || state.params.tool === 'other') { hideBrushCursor(); return; }
     updateBrushCursor(raycastSurface());
     return;
   }
@@ -559,20 +559,31 @@ function updateTexturePreview(show) {
   else { ctx.fillStyle = '#333'; ctx.fillRect(0, 0, cv.width, cv.height); }
   wrap.style.display = 'block';
 }
+// Copie une image/canvas source dans un canvas carré RETEX_SIZE (pour en faire un calque).
+function toRetexCanvas(src) {
+  const c = document.createElement('canvas'); c.width = c.height = RETEX_SIZE;
+  c.getContext('2d').drawImage(src, 0, 0, RETEX_SIZE, RETEX_SIZE);
+  return c;
+}
 function retexLayersOf(mesh) {
   if (!mesh.userData._retexLayers) {
     mesh.userData._retexLayers = [];
+    // La texture de base devient un CALQUE (au fond) : masquable + opacité, comme les autres.
     const base = mesh.userData.baseMat || mesh.material;
-    mesh.userData._retexBase = (base && base.map && base.map.image) ? base.map.image : null;
+    const img = (base && base.map && base.map.image) ? base.map.image : null;
+    if (img) mesh.userData._retexLayers.push({ name: 'Texture de base', canvas: toRetexCanvas(img), opacity: 1, visible: true, _isBase: true });
+    mesh.userData._retexBase = null; // plus de fond séparé : tout passe par les calques
   }
   return mesh.userData._retexLayers;
 }
-function recomposeRetex() {
+// withHilite=false : recompose SANS la surbrillance du masque pré-gen (ex. juste avant la
+// capture envoyée à l'IA — le cyan ne doit pas se retrouver dans le screenshot).
+function recomposeRetex(withHilite = true) {
   const mesh = state.targetMesh; if (!mesh) return;
   const layers = retexLayersOf(mesh);
   // En mode pré-génération : surbrillance de la zone du masque pré-gen (feedback visuel).
   let display = layers;
-  if (_retexMaskMode === 'pregen' && _retexPendingMask && _retexPendingMask.mask) {
+  if (withHilite && _retexMaskMode === 'pregen' && _retexPendingMask && _retexPendingMask.mask) {
     display = [...layers, { name: '_hilite', canvas: retexHilite(), mask: _retexPendingMask.mask, opacity: 0.55, visible: true }];
   }
   const cv = compositeLayers(mesh.userData._retexBase, display, RETEX_SIZE);
@@ -612,7 +623,9 @@ function renderRetexLayers() {
 }
 document.getElementById('retex-capture').addEventListener('click', () => {
   if (!state.targetMesh) { setStatus('Aucun objet.'); return; }
+  recomposeRetex(false);          // pas de surbrillance cyan dans le screenshot
   const url = captureView();
+  recomposeRetex(true);           // restaure la surbrillance à l'écran
   const a = document.createElement('a'); a.href = url; a.download = 'capture-vue.png'; a.click();
   setStatus('Vue capturée + téléchargée. Modifie-la (IA) puis « Importer (reprojeté) » sans bouger la caméra… (les matrices sont mémorisées).');
 });
@@ -643,9 +656,11 @@ document.getElementById('retex-file').addEventListener('change', async (e) => {
   const layers = retexLayersOf(mesh);
   let img; try { img = await loadImageFile(file); } catch (_) { setStatus('Image illisible.'); return; }
   if (_retexMode === 'replace') {
-    // remplace la texture de base (UV) ; les calques existants restent composés par-dessus
-    const b = document.createElement('canvas'); b.width = b.height = RETEX_SIZE; b.getContext('2d').drawImage(img, 0, 0, RETEX_SIZE, RETEX_SIZE);
-    mesh.userData._retexBase = b;
+    // remplace la texture de base (calque du fond) ; les calques existants restent au-dessus
+    const b = toRetexCanvas(img);
+    const baseLayer = layers.find((l) => l._isBase);
+    if (baseLayer) baseLayer.canvas = b;
+    else layers.unshift({ name: 'Texture de base', canvas: b, opacity: 1, visible: true, _isBase: true });
     recomposeRetex(); renderRetexLayers();
     setStatus('Texture de base remplacée.');
     return;
@@ -734,9 +749,24 @@ document.getElementById('retex-generate').addEventListener('click', async () => 
   showLoading(true, 'Génération Nano Banana…');
   await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
   try {
+    // Retire la surbrillance du masque pré-gen de la texture AVANT la capture (sinon le cyan
+    // part dans le screenshot envoyé à l'IA). Le masque pré-gen reste mémorisé (_retexPendingMask)
+    // et sera appliqué au calque généré plus bas.
+    recomposeRetex(false);
     const capUrl = captureView(); // capture 1:1 flat (albédo) + mémorise la caméra
+    // Sauvegarde le screenshot envoyé à l'IA pour vérification (avant l'appel réseau).
+    { const a = document.createElement('a'); a.href = capUrl; a.download = 'capture-nanobanana.png'; a.click(); }
     const outUrl = await generateNanoBanana(capUrl, prompt, key); // image éditée (dataURL)
-    const img = await new Promise((res, rej) => { const im = new Image(); im.onload = () => res(im); im.onerror = () => rej(new Error('image renvoyée illisible')); im.src = outUrl; });
+    const loadURL = (u) => new Promise((res, rej) => { const im = new Image(); im.onload = () => res(im); im.onerror = () => rej(new Error('image illisible')); im.src = u; });
+    const [aiImg, capImg] = await Promise.all([loadURL(outUrl), loadURL(capUrl)]);
+    // Fond transparent GARANTI : on découpe le retour de l'IA avec l'alpha de la capture (= silhouette
+    // de l'objet). L'IA garde la silhouette pixel-perfect (prompt système) -> cutout propre, sans fond
+    // inventé ni bleed de bord à la reprojection. Nano Banana ne sait pas rendre d'alpha lui-même.
+    const img = document.createElement('canvas');
+    img.width = aiImg.naturalWidth || aiImg.width; img.height = aiImg.naturalHeight || aiImg.height;
+    { const c = img.getContext('2d'); c.drawImage(aiImg, 0, 0); c.globalCompositeOperation = 'destination-in'; c.drawImage(capImg, 0, 0, img.width, img.height); c.globalCompositeOperation = 'source-over'; }
+    // Sauvegarde le retour DÉTOURÉ (PNG transparent) pour debug/vérification.
+    { const a = document.createElement('a'); a.href = img.toDataURL('image/png'); a.download = 'nanobanana-retour.png'; a.click(); }
     const layers = retexLayersOf(mesh);
     const canvas = reprojectToUV(img, mesh, RETEX_SIZE);
     const newLayer = { name: 'IA: ' + prompt.slice(0, 14), canvas, opacity: 1, visible: true };
@@ -965,16 +995,27 @@ setHistoryListener((cu, cr) => { undoBtn.disabled = !cu; redoBtn.disabled = !cr;
 
 // ---------- UI : outils ----------
 
+// Brosses de sculpt (partagent les mêmes options de brush : taille, intensité, dureté…).
+const SCULPT_TOOLS = new Set(['draw', 'smooth', 'flatten', 'inflate', 'pinch', 'crease', 'move']);
+// Affiche/masque chaque option selon l'outil courant : un élément [data-tools] liste les outils
+// auxquels il s'applique (token exact, ou l'alias « sculpt » = toutes les brosses de sculpt).
+// Les éléments sans data-tools (undo/redo, affichage, wireframe, objets, export) restent visibles.
+function applyToolVisibility(tool) {
+  document.querySelectorAll('[data-tools]').forEach((el) => {
+    const tokens = el.dataset.tools.split(/\s+/).filter(Boolean);
+    const show = tokens.some((tk) => tk === tool || (tk === 'sculpt' && SCULPT_TOOLS.has(tool)));
+    el.style.display = show ? '' : 'none';
+  });
+}
+
 const toolButtons = document.querySelectorAll('.tool-btn');
 toolButtons.forEach((btn) => {
   btn.addEventListener('click', () => {
     state.params.tool = btn.dataset.tool;
     toolButtons.forEach((b) => b.classList.toggle('active', b === btn));
-    // L'inversion n'a de sens que pour le draw
-    document.getElementById('invert-row').style.display =
-      state.params.tool === 'draw' ? '' : 'none';
     const t = state.params.tool, isGizmo = t === 'gizmo', isMask = t === 'mask', isRetex = t === 'retexture';
-    if (t === 'split' || isGizmo || isRetex) hideBrushCursor();
+    applyToolVisibility(t); // n'affiche que les options liées à l'outil sélectionné
+    if (t === 'split' || t === 'other' || isGizmo || isRetex) hideBrushCursor();
     if (isGizmo) activateGizmo(state.targetMesh); else deactivateGizmo();
     document.getElementById('gizmo-hint').style.display = isGizmo ? '' : 'none';
     document.getElementById('mask-panel').style.display = isMask ? 'flex' : 'none';
@@ -990,6 +1031,7 @@ toolButtons.forEach((btn) => {
     }
   });
 }); // <- fin du toolButtons.forEach (sinon les listeners ci-dessous seraient liés 1×/bouton)
+applyToolVisibility(state.params.tool || 'draw'); // état initial : n'affiche que les options de l'outil courant
 
 // Panneau masque : inverser / effacer / flou
 document.getElementById('mask-invert').addEventListener('click', () => {
@@ -1236,7 +1278,7 @@ window.addEventListener('blur', () => { setAltPivot(false); exitRadiusMode(); })
 function enterRadiusMode() {
   if (radiusMode || !state.targetMesh) return;
   const t = state.params.tool;
-  if (t === 'split' || t === 'gizmo' || t === 'move') return; // sans objet de brush
+  if (t === 'split' || t === 'gizmo' || t === 'move' || t === 'other') return; // sans objet de brush
   radiusMode = true;
   radiusStartX = lastClientX;
   radiusStartSize = state.params.size;
