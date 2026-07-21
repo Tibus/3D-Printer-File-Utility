@@ -25,7 +25,7 @@ import { autoOrient } from './orient.js';
 import { decimateMesh } from './decimate.js';
 import { applyDisplayMode } from './display.js';
 import { saveScene, loadScene, clearScene } from './autosave.js';
-import { captureView, reprojectToUV, compositeLayers, applyTextureCanvas, hasPendingCam, getPendingCam, captureSquareSidePx, paintMaskDab, readMaskCanvas, disposeLayerMask, setLayerMask, invertLayerMask, renderMaskView, generateNanoBanana } from './retexture.js';
+import { captureView, reprojectToUV, compositeLayers, applyTextureCanvas, hasPendingCam, getPendingCam, captureSquareSidePx, paintMaskDab, readMaskCanvas, disposeLayerMask, setLayerMask, invertLayerMask, renderMaskView, generateNanoBanana, NANO_HEIGHT } from './retexture.js';
 import { splitByMask } from './split-mask.js';
 import { pushGeom, pushAction, pushMask, undo, redo, setHistoryListener } from './history.js';
 import { initGizmo, activateGizmo, deactivateGizmo, setAltPivot, isGizmoActive } from './gizmo.js';
@@ -667,6 +667,26 @@ function renderRetexLayers() {
   if (!layers.length) { box.innerHTML = '<div style="font-size:11px;color:#888;">Aucun calque</div>'; return; }
   for (let i = layers.length - 1; i >= 0; i--) { // du dessus (dernier) vers le bas
     const l = layers[i];
+    // ---- Calque RELIEF : vignette height + curseur d'amplitude (comme l'opacité) + visibilité/suppression ----
+    if (l.type === 'relief') {
+      const row = document.createElement('div'); row.className = 'obj-row';
+      row.title = 'Calque de relief géométrique (déplacement des vertices)';
+      const thumb = document.createElement('canvas'); thumb.width = thumb.height = 44; thumb.className = 'retex-thumb';
+      { const tc = thumb.getContext('2d'); tc.fillStyle = '#12121e'; tc.fillRect(0, 0, 44, 44); if (l.thumb) { try { tc.drawImage(l.thumb, 0, 0, 44, 44); } catch (_) {} } }
+      const eye = document.createElement('button'); eye.className = 'obj-btn'; eye.textContent = l.visible ? '👁' : '🚫';
+      eye.title = l.visible ? 'Masquer le relief' : 'Afficher le relief';
+      eye.onclick = () => { l.visible = !l.visible; applyReliefLayerDelta(mesh, l, l.visible ? l.amplitude : 0, true); renderRetexLayers(); };
+      const name = document.createElement('span'); name.className = 'obj-name'; name.textContent = l.name; name.style.fontSize = '11px';
+      const amp = document.createElement('input'); amp.type = 'range'; amp.min = 0; amp.max = 100; amp.value = Math.round((l.amplitude ?? RELIEF_DEFAULT_AMP) * 100); amp.style.width = '48px';
+      amp.title = 'Amplitude du relief';
+      amp.oninput = () => { l.amplitude = amp.value / 100; if (l.visible) reliefSlideSchedule(mesh, l); };
+      amp.onchange = () => { if (l.visible) applyReliefLayerDelta(mesh, l, l.amplitude, true); }; // relâcher -> refit BVH
+      const del = document.createElement('button'); del.className = 'obj-btn'; del.textContent = '🗑'; del.title = 'Supprimer le relief';
+      del.onclick = () => { applyReliefLayerDelta(mesh, l, 0, true); layers.splice(i, 1); renderRetexLayers(); };
+      row.append(thumb, name, eye, amp, del);
+      box.appendChild(row);
+      continue;
+    }
     const row = document.createElement('div'); row.className = 'obj-row' + (l === _retexSelLayer ? ' active' : '');
     const select = () => {
       _retexSelLayer = (_retexSelLayer === l ? null : l);
@@ -941,6 +961,227 @@ function runMultiView(nViews) {
 }
 document.getElementById('retex-mv6').addEventListener('click', () => runMultiView(6));
 document.getElementById('retex-mv12').addEventListener('click', () => runMultiView(12));
+
+// ---------- Relief IA : calque de type « relief » (déplacement des vertices) ----------
+// Un calque relief est stocké dans la même liste que les calques couleur, avec :
+//   { type:'relief', name, thumb (canvas height preview), visible, amplitude (0..1, ~opacité),
+//     appliedAmp (amplitude actuellement APPLIQUÉE à la géométrie),
+//     vcount, moved:Uint32Array, dir:Float32Array(3·n), disp:Float32Array(n) [déplacement à amp=1],
+//     recIdx:Uint32Array (1-anneau, pour recalcul normales), tris:Int32Array, rmin, rmax }
+// Non destructif comme un calque couleur : l'amplitude/visibilité pilotent un DELTA incrémental le long
+// des directions figées (le delta télescope -> pas de dérive ; se compose avec sculpt manuel et autres
+// calques relief, addition commutative). Comme l'opacité couleur, ces réglages NE passent PAS par Ctrl+Z ;
+// on retire un relief en supprimant son calque.
+const RELIEF_DEFAULT_AMP = 0.4;
+
+function markRange(attr, vmin, vmax) {
+  const dim = attr.itemSize, start = vmin * dim, count = (vmax - vmin + 1) * dim;
+  if (typeof attr.addUpdateRange === 'function') attr.addUpdateRange(start, count);
+  else if (attr.updateRange) { attr.updateRange.offset = start; attr.updateRange.count = count; }
+  attr.needsUpdate = true;
+}
+
+// Recalcule les normales UNIQUEMENT sur les triangles touchés (rapide, pour le drag temps réel),
+// re-moyennées aux coutures qui intersectent la zone.
+function recomputeNormalsLocal(g, st) {
+  const pos = g.attributes.position.array, nor = g.attributes.normal.array, idx = g.index.array;
+  const rec = st.recIdx, tris = st.tris;
+  for (let k = 0; k < rec.length; k++) { const v3 = rec[k] * 3; nor[v3] = 0; nor[v3 + 1] = 0; nor[v3 + 2] = 0; }
+  for (let t = 0; t < tris.length; t++) {
+    const o = tris[t] * 3, a = idx[o] * 3, b = idx[o + 1] * 3, c = idx[o + 2] * 3;
+    const ax = pos[a], ay = pos[a + 1], az = pos[a + 2];
+    const e1x = pos[b] - ax, e1y = pos[b + 1] - ay, e1z = pos[b + 2] - az;
+    const e2x = pos[c] - ax, e2y = pos[c + 1] - ay, e2z = pos[c + 2] - az;
+    const nx = e1y * e2z - e1z * e2y, ny = e1z * e2x - e1x * e2z, nz = e1x * e2y - e1y * e2x;
+    nor[a] += nx; nor[a + 1] += ny; nor[a + 2] += nz;
+    nor[b] += nx; nor[b + 1] += ny; nor[b + 2] += nz;
+    nor[c] += nx; nor[c + 1] += ny; nor[c + 2] += nz;
+  }
+  for (let k = 0; k < rec.length; k++) { const v3 = rec[k] * 3; const x = nor[v3], y = nor[v3 + 1], z = nor[v3 + 2]; const l = Math.hypot(x, y, z); if (l > 0) { nor[v3] = x / l; nor[v3 + 1] = y / l; nor[v3 + 2] = z / l; } }
+  const gm = state.groupMembers;
+  if (gm && gm.size > 0) {
+    const rep = state.rep, done = new Set();
+    for (let k = 0; k < rec.length; k++) {
+      const r = rep[rec[k]]; if (done.has(r)) continue; done.add(r);
+      const members = gm.get(r); if (!members) continue;
+      let x = 0, y = 0, z = 0;
+      for (let j = 0; j < members.length; j++) { const m3 = members[j] * 3; x += nor[m3]; y += nor[m3 + 1]; z += nor[m3 + 2]; }
+      const l = Math.hypot(x, y, z); if (l > 0) { x /= l; y /= l; z /= l; }
+      for (let j = 0; j < members.length; j++) { const m3 = members[j] * 3; nor[m3] = x; nor[m3 + 1] = y; nor[m3 + 2] = z; }
+    }
+  }
+  markRange(g.attributes.position, st.rmin, st.rmax);
+  markRange(g.attributes.normal, st.rmin, st.rmax);
+}
+
+// Applique à un calque relief le delta (newAmp01 - layer.appliedAmp) sur la géométrie COURANTE.
+// doRefit=false pendant le drag (fluide) ; true au relâcher (met à jour le BVH pour raycast/sculpt/export).
+// Garde : si la topologie a changé (subdivision/remesh in-place) le champ n'est plus applicable -> no-op.
+function applyReliefLayerDelta(mesh, layer, newAmp01, doRefit) {
+  const g = mesh.geometry;
+  if (layer.vcount !== g.attributes.position.count) return;
+  const dAmp = newAmp01 - layer.appliedAmp;
+  const pos = g.attributes.position.array;
+  if (dAmp !== 0) {
+    for (let k = 0; k < layer.moved.length; k++) {
+      const v3 = layer.moved[k] * 3, s = layer.disp[k] * dAmp;
+      pos[v3] += layer.dir[k * 3] * s; pos[v3 + 1] += layer.dir[k * 3 + 1] * s; pos[v3 + 2] += layer.dir[k * 3 + 2] * s;
+    }
+    layer.appliedAmp = newAmp01;
+    recomputeNormalsLocal(g, layer);
+    if (doRefit && g.boundsTree) g.boundsTree.refit();
+    markDirty();
+  } else if (doRefit && g.boundsTree) { g.boundsTree.refit(); }
+}
+
+// Drag d'amplitude throttlé en rAF (déplacement + normales locales, sans refit BVH pendant le glissement).
+let _reliefSched = false, _reliefPending = null;
+function reliefSlideSchedule(mesh, layer) {
+  _reliefPending = { mesh, layer };
+  if (_reliefSched) return; _reliefSched = true;
+  requestAnimationFrame(() => { _reliefSched = false; const p = _reliefPending; if (p) applyReliefLayerDelta(p.mesh, p.layer, p.layer.amplitude, false); });
+}
+
+// High-pass d'une image en niveaux de gris : détail = mid-gris + (image − flou). Retire la
+// composante très basse fréquence (dégradé global / ombrage doux que l'IA bake parfois) et ne
+// garde QUE le détail local, recentré sur 128 -> évite que tout le patch gonfle (dérive).
+function highPassGray(srcImg, w, h) {
+  const full = document.createElement('canvas'); full.width = w; full.height = h;
+  const fc = full.getContext('2d'); fc.drawImage(srcImg, 0, 0, w, h);
+  const fd = fc.getImageData(0, 0, w, h).data;
+  const bw = Math.max(2, Math.round(w / 64)), bh = Math.max(2, Math.round(h / 64)); // flou = downscale fort
+  const small = document.createElement('canvas'); small.width = bw; small.height = bh;
+  small.getContext('2d').drawImage(full, 0, 0, bw, bh);
+  const blur = document.createElement('canvas'); blur.width = w; blur.height = h;
+  const bc = blur.getContext('2d'); bc.imageSmoothingEnabled = true; bc.drawImage(small, 0, 0, w, h);
+  const bd = bc.getImageData(0, 0, w, h).data;
+  const out = document.createElement('canvas'); out.width = w; out.height = h;
+  const oc = out.getContext('2d'); const oi = oc.createImageData(w, h); const od = oi.data;
+  for (let i = 0; i < w * h; i++) {
+    const lf = fd[i * 4] * 0.299 + fd[i * 4 + 1] * 0.587 + fd[i * 4 + 2] * 0.114;
+    const lb = bd[i * 4] * 0.299 + bd[i * 4 + 1] * 0.587 + bd[i * 4 + 2] * 0.114;
+    let d = 128 + (lf - lb); if (d < 0) d = 0; else if (d > 255) d = 255;
+    od[i * 4] = od[i * 4 + 1] = od[i * 4 + 2] = d; od[i * 4 + 3] = fd[i * 4 + 3];
+  }
+  oc.putImageData(oi, 0, 0);
+  return out;
+}
+
+// Échantillonnage bilinéaire (luma + alpha) d'un ImageData carré `data` (size²) en UV (0..1).
+function sampleBilinear(data, size, u, v) {
+  let x = u * (size - 1), y = v * (size - 1);
+  if (x < 0) x = 0; else if (x > size - 1) x = size - 1;
+  if (y < 0) y = 0; else if (y > size - 1) y = size - 1;
+  const x0 = x | 0, y0 = y | 0, x1 = x0 + 1 < size ? x0 + 1 : x0, y1 = y0 + 1 < size ? y0 + 1 : y0;
+  const fx = x - x0, fy = y - y0;
+  const i00 = (y0 * size + x0) * 4, i10 = (y0 * size + x1) * 4, i01 = (y1 * size + x0) * 4, i11 = (y1 * size + x1) * 4;
+  const lp = (a, b, t) => a + (b - a) * t;
+  const g = lp(lp(data[i00], data[i10], fx), lp(data[i01], data[i11], fx), fy);
+  const a = lp(lp(data[i00 + 3], data[i10 + 3], fx), lp(data[i01 + 3], data[i11 + 3], fx), fy);
+  return { g, a };
+}
+
+// Construit un CALQUE de relief depuis une height map (canvas UV, gris centré 128), l'applique à
+// l'amplitude par défaut et le renvoie (à pousser dans la liste des calques). Non destructif : le champ
+// est mémorisé sur le calque -> amplitude/visibilité réglables ensuite via applyReliefLayerDelta.
+// `maskCanvas` (canvas UV, alpha=révélation) confine le relief à la zone peinte (optionnel).
+// Direction = normale d'origine figée ; coutures soudées (groupMembers) -> pas de fissure.
+function buildReliefLayer(mesh, heightCanvas, maskCanvas, name, thumb) {
+  const g = mesh.geometry;
+  const uvAttr = g.attributes.uv;
+  if (!uvAttr) throw new Error('Le maillage n’a pas d’UV — impossible de projeter le relief.');
+  const nor = g.attributes.normal.array, uv = uvAttr.array;
+  const N = g.attributes.position.count;
+  const size = heightCanvas.width;
+  const hd = heightCanvas.getContext('2d').getImageData(0, 0, size, size).data;
+  const md = maskCanvas ? maskCanvas.getContext('2d').getImageData(0, 0, maskCanvas.width, maskCanvas.height).data : null;
+  const msize = maskCanvas ? maskCanvas.width : 0;
+  g.computeBoundingBox(); const bb = new THREE.Vector3(); g.boundingBox.getSize(bb);
+  const unit = (bb.length() || 1) * 0.15; // déplacement à amplitude=1 : jusqu'à 15% de la diagonale bbox
+
+  // 1) Déplacement UNITAIRE (amplitude=1) par vertex (0 si non couvert / hors zone).
+  const dispV = new Float32Array(N);
+  for (let v = 0; v < N; v++) {
+    const s = sampleBilinear(hd, size, uv[v * 2], uv[v * 2 + 1]);
+    if (s.a < 2) continue;                       // texel non peint (occlusion / dos / hors-vue)
+    let maskA = 1;
+    if (md) { maskA = sampleBilinear(md, msize, uv[v * 2], uv[v * 2 + 1]).a / 255; if (maskA <= 0.002) continue; }
+    dispV[v] = (s.g / 255 - 0.5) * 2 * unit * (s.a / 255) * maskA;
+  }
+
+  // 2) Soudure des coutures : membres coïncidents déplacés du MÊME montant (moyenne) -> pas de fissure.
+  const gm = state.groupMembers;
+  if (gm && gm.size > 0) {
+    gm.forEach((members) => {
+      let sum = 0; for (let k = 0; k < members.length; k++) sum += dispV[members[k]];
+      const avg = sum / members.length;
+      for (let k = 0; k < members.length; k++) dispV[members[k]] = avg;
+    });
+  }
+
+  // 3) Champ compact : sommets déplacés (moved) + 1-anneau (recIdx, pour les normales) + triangles (tris).
+  const idxA = g.index.array, nTri = idxA.length / 3;
+  const movedFlag = new Uint8Array(N); const movedList = [];
+  for (let v = 0; v < N; v++) if (dispV[v] !== 0) { movedFlag[v] = 1; movedList.push(v); }
+  if (!movedList.length) return null;
+  const recSet = new Set(); const triList = [];
+  for (let t = 0; t < nTri; t++) { const a = idxA[t * 3], b = idxA[t * 3 + 1], c = idxA[t * 3 + 2]; if (movedFlag[a] || movedFlag[b] || movedFlag[c]) { triList.push(t); recSet.add(a); recSet.add(b); recSet.add(c); } }
+  const moved = Uint32Array.from(movedList);
+  const recIdx = Uint32Array.from(recSet);
+  const dir = new Float32Array(moved.length * 3), disp = new Float32Array(moved.length);
+  let rmin = Infinity, rmax = -1;
+  for (let k = 0; k < moved.length; k++) { const v = moved[k], v3 = v * 3; dir[k * 3] = nor[v3]; dir[k * 3 + 1] = nor[v3 + 1]; dir[k * 3 + 2] = nor[v3 + 2]; disp[k] = dispV[v]; }
+  for (let k = 0; k < recIdx.length; k++) { const v = recIdx[k]; if (v < rmin) rmin = v; if (v > rmax) rmax = v; }
+
+  // 4) Calque relief (appliedAmp=0 -> applyReliefLayerDelta l'applique à l'amplitude voulue).
+  const layer = { type: 'relief', name, thumb, visible: true, amplitude: RELIEF_DEFAULT_AMP, appliedAmp: 0, vcount: N, moved, dir, disp, recIdx, tris: Int32Array.from(triList), rmin, rmax };
+  applyReliefLayerDelta(mesh, layer, layer.amplitude, true);
+  return layer;
+}
+
+document.getElementById('retex-relief').addEventListener('click', async () => {
+  const mesh = state.targetMesh; if (!mesh) { setStatus('Aucun objet.'); return; }
+  if (!mesh.geometry.attributes.uv) { setStatus('Le maillage n’a pas d’UV (retexture requise).'); return; }
+  const key = document.getElementById('retex-apikey').value.trim();
+  if (!key) { setStatus('Renseigne ta clé API Gemini.'); return; }
+  const prompt = document.getElementById('retex-prompt').value.trim();
+  if (!prompt) { setStatus('Écris un prompt (le détail de relief voulu).'); return; }
+  localStorage.setItem('geminiApiKey', key);
+  if (isGizmoActive()) deactivateGizmo();
+  showLoading(true, 'Relief IA (height map)…');
+  await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+  try {
+    recomposeRetex(false);
+    const capUrl = captureView(); // capture flat de l'état courant + mémorise la caméra
+    let maskUrl = null;
+    if (_retexPendingMask && _retexPendingMask.mask) maskUrl = renderMaskView(mesh, _retexPendingMask.mask, getPendingCam(), 1024).toDataURL('image/png');
+    const outUrl = await generateNanoBanana(capUrl, prompt, key, undefined, maskUrl, NANO_HEIGHT);
+    const [aiImg, capImg] = await Promise.all([loadImageURL(outUrl), loadImageURL(capUrl)]);
+    const w = aiImg.naturalWidth || aiImg.width, h = aiImg.naturalHeight || aiImg.height;
+    const dbg = document.getElementById('retex-debug').checked;
+    const dl = (href, name) => { const a = document.createElement('a'); a.href = href; a.download = name; a.click(); };
+    if (dbg) { dl(capUrl, 'relief-1-capture.png'); dl(outUrl, 'relief-2-heightmap-brut.png'); }
+    // High-pass (anti-dérive) -> ne garde que le détail, centré sur mid-gris.
+    const hp = highPassGray(aiImg, w, h);
+    // Découpe à la silhouette érodée : hors objet = transparent -> reprojection ignore (relief nul).
+    const cut = erodeMaskCanvas(capImg, 2, w, h);
+    { const c = hp.getContext('2d'); c.globalCompositeOperation = 'destination-in'; c.drawImage(cut, 0, 0); c.globalCompositeOperation = 'source-over'; }
+    if (dbg) dl(hp.toDataURL('image/png'), 'relief-3-detail-highpass.png');
+    // Reproject la height map dans l'atlas UV (pad court : continuité aux coutures).
+    const heightCanvas = reprojectToUV(hp, mesh, RETEX_SIZE, getPendingCam(), 4);
+    if (dbg) dl(heightCanvas.toDataURL('image/png'), 'relief-4-height-uv.png');
+    const maskCanvas = _retexPendingMask && _retexPendingMask.mask ? _retexPendingMask.mask : null;
+    // Vignette du calque : aperçu de la height map dans le cadrage capture (mid-gris = neutre).
+    const thumb = document.createElement('canvas'); thumb.width = thumb.height = 96; thumb.getContext('2d').drawImage(hp, 0, 0, 96, 96);
+    const layer = buildReliefLayer(mesh, heightCanvas, maskCanvas, '⛰️ ' + prompt.slice(0, 12), thumb);
+    // La zone d'inpaint sert de confinement ; on la libère après usage (comme la génération couleur).
+    if (_retexPendingMask) { _retexPendingMask = null; _retexMaskMode = 'layer'; }
+    if (layer) { retexLayersOf(mesh).push(layer); }
+    recomposeRetex(); renderRetexLayers();
+    setStatus(layer ? `Calque relief ajouté (${layer.moved.length.toLocaleString('fr-FR')} vertices). Règle l’amplitude dans la liste.` : 'Relief nul (height map plate ou zone non couverte).');
+  } catch (err) { console.error(err); setStatus(`Relief IA : ${err.message}`); }
+  finally { showLoading(false); }
+});
 
 document.getElementById('retex-pregen').addEventListener('click', () => {
   if (_retexMaskMode === 'pregen') { _retexMaskMode = 'layer'; setStatus('Mode masque de calque.'); }

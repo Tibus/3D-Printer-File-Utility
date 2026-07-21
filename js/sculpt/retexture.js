@@ -282,7 +282,7 @@ export function compositeLayers(baseImage, layers, texSize = 2048) {
   if (baseImage) ctx.drawImage(baseImage, 0, 0, texSize, texSize);
   else { ctx.fillStyle = '#b8b8b8'; ctx.fillRect(0, 0, texSize, texSize); }
   for (const l of layers) {
-    if (!l.visible || !l.canvas) continue;
+    if (!l.visible || !l.canvas || l.type === 'relief') continue; // relief = géométrie, pas de couleur
     let src = l.canvas;
     if (l.mask) { // applique le masque alpha : garde le calque seulement là où mask.alpha > 0
       const tmp = document.createElement('canvas'); tmp.width = tmp.height = texSize; const t = tmp.getContext('2d');
@@ -544,12 +544,20 @@ const NANO_SYSTEM = [
 const NANO_INPAINT = [
   'A SECOND image is provided: a MASK. Edit ONLY the region where the mask is WHITE. Every pixel where the mask is BLACK MUST stay strictly identical to the first image (do not restyle, recolor or touch it). Blend seamlessly at the mask border so the edited region matches the surrounding untouched texture. The requested edit applies exclusively inside the white region.',
 ].join(' ');
-export async function generateNanoBanana(imageDataURL, prompt, apiKey, model = NANO_MODEL, maskDataURL = null) {
+// Prompt SYSTÈME pour le RELIEF : l'IA renvoie une height map (niveaux de gris) alignée pixel-pour-pixel
+// avec la capture ; reprojetée puis convertie en déplacement des vertices le long des normales.
+export const NANO_HEIGHT = [
+  'You output a GRAYSCALE HEIGHT / DISPLACEMENT MAP that adds fine geometric surface relief to the single 3D object shown in this flat, unlit screenshot. The gray level encodes how far to push the surface OUT (brighter) or IN (darker) along its normal.',
+  'ENCODING (mandatory): mid-gray 50% (rgb 128,128,128) = NO displacement (surface unchanged). Brighter than mid-gray = raised bump, darker = carved recess. Center ALL detail on mid-gray. Do NOT bake global lighting, ambient occlusion, cast shadows, a large-scale gradient, or the object\'s overall rounded shading into the map — encode ONLY the requested LOCAL relief detail (e.g. scales, wrinkles, bark, engraving, woven fabric, studs) as small height variations around mid-gray.',
+  'PIXEL-PERFECT ALIGNMENT (mandatory): the object silhouette, position, scale and rotation MUST match the input EXACTLY — the map is reprojected onto the 3D model, so any shift, tilt, zoom, crop or reframe breaks it. Keep the exact same framing. The relief detail must land on the same pixels as the surface it belongs to.',
+  'Output a single grayscale image, same resolution and framing as the input, no color, no outlines, no vignette, no border. Outside the object silhouette, output neutral mid-gray.',
+].join(' ');
+export async function generateNanoBanana(imageDataURL, prompt, apiKey, model = NANO_MODEL, maskDataURL = null, system = NANO_SYSTEM) {
   const b64 = imageDataURL.split(',')[1];
   const mime = (imageDataURL.match(/^data:([^;]+);/) || [, 'image/png'])[1];
   // Le modèle image gère mal systemInstruction -> on préfixe le prompt système au texte.
   // responseModalities force la sortie IMAGE (sinon le modèle peut ne renvoyer que du texte).
-  const fullText = `${NANO_SYSTEM}${maskDataURL ? ' ' + NANO_INPAINT : ''}\n\nEdit instruction: ${prompt}`;
+  const fullText = `${system}${maskDataURL ? ' ' + NANO_INPAINT : ''}\n\nEdit instruction: ${prompt}`;
   const reqParts = [{ text: fullText }, { inline_data: { mime_type: mime, data: b64 } }];
   if (maskDataURL) reqParts.push({ inline_data: { mime_type: (maskDataURL.match(/^data:([^;]+);/) || [, 'image/png'])[1], data: maskDataURL.split(',')[1] } });
   const body = {
