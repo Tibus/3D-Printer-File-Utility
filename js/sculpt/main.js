@@ -840,13 +840,19 @@ document.getElementById('retex-generate').addEventListener('click', async () => 
     // part dans le screenshot envoyé à l'IA). Le masque pré-gen reste mémorisé (_retexPendingMask)
     // et sera appliqué au calque généré plus bas.
     recomposeRetex(false);
-    const capUrl = captureView(); // capture 1:1 flat (albédo) + mémorise la caméra
-    const outUrl = await generateNanoBanana(capUrl, prompt, key); // image éditée (dataURL)
+    const capUrl = captureView(); // capture 1:1 flat (albédo) de l'ÉTAT COURANT + mémorise la caméra
+    // INPAINT : si une zone est peinte (masque pré-gen), on l'envoie à l'IA rendue dans le cadrage
+    // de la capture -> l'IA n'édite QUE cette zone et raccorde au reste (au lieu de tout régénérer).
+    let maskUrl = null;
+    if (_retexPendingMask && _retexPendingMask.mask) {
+      maskUrl = renderMaskView(mesh, _retexPendingMask.mask, getPendingCam(), 1024).toDataURL('image/png');
+    }
+    const outUrl = await generateNanoBanana(capUrl, prompt, key, undefined, maskUrl); // image éditée (dataURL)
     const loadURL = (u) => new Promise((res, rej) => { const im = new Image(); im.onload = () => res(im); im.onerror = () => rej(new Error('image illisible')); im.src = u; });
     const [aiImg, capImg] = await Promise.all([loadURL(outUrl), loadURL(capUrl)]);
     const dbg = document.getElementById('retex-debug').checked;
     const dl = (href, name) => { const a = document.createElement('a'); a.href = href; a.download = name; a.click(); };
-    if (dbg) { dl(capUrl, 'debug-1-capture.png'); dl(outUrl, 'debug-2-ia-brut.png'); }
+    if (dbg) { dl(capUrl, 'debug-1-capture.png'); if (maskUrl) dl(maskUrl, 'debug-1b-inpaint-mask.png'); dl(outUrl, 'debug-2-ia-brut.png'); }
     // Fond transparent GARANTI : on découpe le retour de l'IA avec la silhouette de la capture, ÉRODÉE
     // de quelques pixels. L'IA rend souvent un fond clair qui bave sur le bord anti-aliasé de la
     // silhouette (liseré blanc) ; en érodant on ne garde que l'intérieur franc, et l'edge-padding de
@@ -863,13 +869,14 @@ document.getElementById('retex-generate').addEventListener('click', async () => 
     if (_retexPendingMask && _retexPendingMask.mask) { newLayer.mask = _retexPendingMask.mask; newLayer._maskRT = _retexPendingMask._maskRT; _retexPendingMask = null; _retexMaskMode = 'layer'; _retexSelLayer = newLayer; }
     layers.push(newLayer);
     recomposeRetex(); renderRetexLayers();
-    setStatus('Calque IA généré et reprojeté.');
+    setStatus(maskUrl ? 'Inpaint IA généré (zone ciblée) et reprojeté.' : 'Calque IA généré et reprojeté.');
   } catch (err) { console.error(err); setStatus(`Nano Banana : ${err.message}`); }
   finally { showLoading(false); }
 });
+
 document.getElementById('retex-pregen').addEventListener('click', () => {
   if (_retexMaskMode === 'pregen') { _retexMaskMode = 'layer'; setStatus('Mode masque de calque.'); }
-  else { _retexMaskMode = 'pregen'; _retexSelLayer = null; setStatus('Masque pré-génération — peins la zone (surbrillance). Elle deviendra le masque du prochain calque importé.'); }
+  else { _retexMaskMode = 'pregen'; _retexSelLayer = null; setStatus('Zone d’inpaint — peins la zone (surbrillance) ; « Générer » ne modifiera que cette zone.'); }
   recomposeRetex(); renderRetexLayers();
 });
 document.getElementById('remesh-btn').addEventListener('click', async () => {

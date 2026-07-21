@@ -470,14 +470,16 @@ export function disposeLayerMask(layer) { if (layer._maskRT) { layer._maskRT.dis
 // Aperçu du masque DANS LE CADRAGE DE LA CAPTURE (comme la photo) plutôt qu'en UV : on rend l'objet
 // depuis la caméra de capture (cam.camLocal/proj) en échantillonnant le masque UV -> niveaux de gris
 // (blanc = révélé). Renvoie un canvas size² (fond noir). `maskCanvas` = layer.mask (alpha = révélation).
-export function renderMaskView(mesh, maskCanvas, cam, size = 96) {
+// uncovered=true : blanc là où maskCanvas est TRANSPARENT (alpha<0.5) et l'objet est visible -> sert
+// de masque d'inpaint pour le multi-view (zones pas encore texturées, vues depuis cette caméra).
+export function renderMaskView(mesh, maskCanvas, cam, size = 96, uncovered = false) {
   const r = state.renderer;
   const tex = new THREE.Texture(maskCanvas); tex.flipY = false; tex.needsUpdate = true;
   tex.minFilter = THREE.LinearFilter; tex.magFilter = THREE.LinearFilter;
   const mat = new THREE.ShaderMaterial({
-    uniforms: { mask: { value: tex } }, side: THREE.DoubleSide,
+    uniforms: { mask: { value: tex }, uncov: { value: uncovered ? 1 : 0 } }, side: THREE.DoubleSide,
     vertexShader: 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * viewMatrix * modelMatrix * vec4(position, 1.0); }',
-    fragmentShader: 'precision highp float; uniform sampler2D mask; varying vec2 vUv; void main(){ float a = texture2D(mask, vUv).a; gl_FragColor = vec4(vec3(a), 1.0); }',
+    fragmentShader: 'precision highp float; uniform sampler2D mask; uniform float uncov; varying vec2 vUv; void main(){ float a = texture2D(mask, vUv).a; float v = uncov > 0.5 ? (a < 0.5 ? 1.0 : 0.0) : a; gl_FragColor = vec4(vec3(v), 1.0); }',
   });
   const scn = new THREE.Scene();
   const m = new THREE.Mesh(mesh.geometry, mat);
@@ -538,14 +540,20 @@ const NANO_SYSTEM = [
   'Keep the geometry, contour, proportions, thickness and orientation strictly identical; change ONLY the requested appearance.',
   'Output a single image at the same resolution and the same framing as the input, with the object on the same pixels.',
 ].join(' ');
-export async function generateNanoBanana(imageDataURL, prompt, apiKey, model = NANO_MODEL) {
+// Consigne INPAINT ajoutée quand un masque est fourni : n'éditer QUE la zone blanche du masque.
+const NANO_INPAINT = [
+  'A SECOND image is provided: a MASK. Edit ONLY the region where the mask is WHITE. Every pixel where the mask is BLACK MUST stay strictly identical to the first image (do not restyle, recolor or touch it). Blend seamlessly at the mask border so the edited region matches the surrounding untouched texture. The requested edit applies exclusively inside the white region.',
+].join(' ');
+export async function generateNanoBanana(imageDataURL, prompt, apiKey, model = NANO_MODEL, maskDataURL = null) {
   const b64 = imageDataURL.split(',')[1];
   const mime = (imageDataURL.match(/^data:([^;]+);/) || [, 'image/png'])[1];
   // Le modèle image gère mal systemInstruction -> on préfixe le prompt système au texte.
   // responseModalities force la sortie IMAGE (sinon le modèle peut ne renvoyer que du texte).
-  const fullText = `${NANO_SYSTEM}\n\nEdit instruction: ${prompt}`;
+  const fullText = `${NANO_SYSTEM}${maskDataURL ? ' ' + NANO_INPAINT : ''}\n\nEdit instruction: ${prompt}`;
+  const reqParts = [{ text: fullText }, { inline_data: { mime_type: mime, data: b64 } }];
+  if (maskDataURL) reqParts.push({ inline_data: { mime_type: (maskDataURL.match(/^data:([^;]+);/) || [, 'image/png'])[1], data: maskDataURL.split(',')[1] } });
   const body = {
-    contents: [{ parts: [{ text: fullText }, { inline_data: { mime_type: mime, data: b64 } }] }],
+    contents: [{ parts: reqParts }],
     generationConfig: { responseModalities: ['IMAGE', 'TEXT'] },
   };
   const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`, {
@@ -565,8 +573,6 @@ export async function generateNanoBanana(imageDataURL, prompt, apiKey, model = N
   const inl = p.inlineData || p.inline_data;
   return `data:${inl.mimeType || inl.mime_type || 'image/png'};base64,${inl.data}`;
 }
-
-"Unable to show the generated image. The model could not generate the image based on the prompt provided. You will not be charged for this request. Try rephrasing the prompt. If you think this was an error, [send feedback](https://ai.google.dev/gemini-api/docs/troubleshooting)."
 
 // Applique un canvas comme map de couleur de l'objet (baseMat + affichage dérivé).
 export function applyTextureCanvas(mesh, canvas) {
