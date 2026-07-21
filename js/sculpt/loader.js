@@ -19,11 +19,16 @@ import { pushAction, clearHistory } from './history.js';
 import { displayMaterial } from './display.js';
 import { state } from './state.js';
 import { setStatus, showLoading, refreshWireframe } from './ui.js';
+import { extractRig, addRiggedObject, disposeRig } from './rig.js';
 
 // Patch prototypes three-mesh-bvh (idempotent)
 THREE.BufferGeometry.prototype.computeBoundsTree = computeBoundsTree;
 THREE.BufferGeometry.prototype.disposeBoundsTree = disposeBoundsTree;
 THREE.Mesh.prototype.raycast = acceleratedRaycast;
+// SkinnedMesh a son propre raycast (skinning CPU par sommet, O(n)) qui masque le raycast BVH hérité de
+// Mesh -> picking très lent sur un mesh riggé. On force le raycast accéléré (BVH sur la géométrie bind ;
+// on sculpte/pique en pose de repos, donc cohérent).
+THREE.SkinnedMesh.prototype.raycast = acceleratedRaycast;
 
 const CLAY_COLOR = 0xb7bcc8;
 const MIN_C = 0.12; // black-lift (identique au viewer) pour garder du shading
@@ -41,16 +46,17 @@ export async function loadModelFromFile(file) {
     } else {
       const url = URL.createObjectURL(file);
       let root;
+      let loadedAnimations = [];
       try {
         switch (ext) {
           case 'glb':
           case 'gltf': {
             const gltf = await new GLTFLoader().loadAsync(url);
-            root = gltf.scene;
+            root = gltf.scene; loadedAnimations = gltf.animations || [];
             break;
           }
           case 'fbx':
-            root = await new FBXLoader().loadAsync(url);
+            root = await new FBXLoader().loadAsync(url); loadedAnimations = root.animations || [];
             break;
           case 'obj':
             root = await new OBJLoader().loadAsync(url);
@@ -65,6 +71,31 @@ export async function loadModelFromFile(file) {
         }
       } finally {
         URL.revokeObjectURL(url);
+      }
+
+      // Modèle RIGGÉ (squelette) : on préserve le graphe natif (skin + bones + clips) au lieu de
+      // l'aplatir -> chemin séparé (mode Bones). La sculpture ne s'y applique pas comme sur un mesh normal.
+      if (ext === 'glb' || ext === 'gltf' || ext === 'fbx') {
+        const rig = extractRig(root);
+        if (rig) {
+          const obj = addRiggedObject(root, file.name.replace(/\.[^.]+$/, ''), loadedAnimations, (sm) => {
+            if (!sm.geometry.attributes.normal) sm.geometry.computeVertexNormals(); // brosse/curseur exigent des normales
+            reorderSpatially(sm.geometry);                                  // localité mémoire -> upload GPU partiel (sinon lag). skinIndex/skinWeight permutés avec.
+            if (!sm.geometry.boundsTree) sm.geometry.computeBoundsTree({ setBoundingBox: false });
+            sm.userData.baseMat = sm.material;                              // matériau réel (skinné) ; l'affichage en dérive
+            sm.material = displayMaterial(sm.material, state.params.displayMode || 'texture');
+            // Wireframe : SkinnedMesh lié au MÊME squelette pour qu'il suive la pose/animation.
+            const wire = new THREE.SkinnedMesh(sm.geometry, new THREE.MeshBasicMaterial({ color: 0x000000, wireframe: true, transparent: true, opacity: 0.15 }));
+            wire.name = 'wireframe'; wire.frustumCulled = false; wire.visible = state.params.displayHelper;
+            wire.bind(sm.skeleton, sm.bindMatrix);
+            sm.add(wire);
+          });
+          setActiveObject(obj);
+          frameAll();
+          _onObjectsChanged();
+          setStatus(`${file.name} — modèle riggé : ${rig.bones.length} os, ${loadedAnimations.length} animation(s). Sculpt/retexture OK (pose de repos), outil Bones dispo.`);
+          return;
+        }
       }
 
       const texturedMat = findTexturedMaterial(root);
@@ -337,6 +368,7 @@ export function setActiveObject(mesh) {
 }
 
 export function disposeObject(mesh) {
+  if (mesh.userData && mesh.userData.isRig) { disposeRig(mesh); return; } // rig : + helper + mixer
   mesh.traverse((o) => {
     if (o.isMesh) {
       if (o.geometry.boundsTree) o.geometry.disposeBoundsTree();
@@ -349,6 +381,15 @@ export function disposeObject(mesh) {
 
 // Retire de la scène + liste SANS libérer (pour pouvoir le restaurer via undo).
 export function detachObject(mesh) {
+  if (mesh.userData && mesh.userData.isRig) { // rig = unité : on retire tout le squelette
+    const rig = mesh.userData.rig;
+    for (let i = state.objects.length - 1; i >= 0; i--) { const o = state.objects[i]; if (o.userData && o.userData.rig === rig) state.objects.splice(i, 1); }
+    if (rig.root) state.scene.remove(rig.root);
+    if (rig.helper) state.scene.remove(rig.helper);
+    if (state.targetMesh && state.targetMesh.userData && state.targetMesh.userData.rig === rig) setActiveObject(state.objects.find((o) => o.visible) || state.objects[0] || null);
+    _onObjectsChanged();
+    return;
+  }
   const i = state.objects.indexOf(mesh);
   if (i >= 0) state.objects.splice(i, 1);
   state.scene.remove(mesh);
@@ -358,6 +399,14 @@ export function detachObject(mesh) {
 
 // Ré-ajoute un mesh précédemment détaché.
 export function attachObject(mesh) {
+  if (mesh.userData && mesh.userData.isRig) {
+    const rig = mesh.userData.rig;
+    if (rig.root) state.scene.add(rig.root);
+    if (rig.helper) state.scene.add(rig.helper);
+    for (const sm of rig.skinned) if (!state.objects.includes(sm)) state.objects.push(sm);
+    _onObjectsChanged();
+    return;
+  }
   if (state.objects.includes(mesh)) return;
   state.scene.add(mesh);
   state.objects.push(mesh);
@@ -488,6 +537,35 @@ function installMesh(geometry, material) {
   _onObjectsChanged();
 }
 
+// Convertit un rig POSÉ en mesh(es) statique(s) : on baake les positions MONDE skinnées (via
+// applyBoneTransform · matrixWorld — mêmes positions que le raycast weight paint, donc fiables) dans une
+// géométrie plane, sans squelette. Le rig est retiré, remplacé par des Mesh sculptables normaux à la pose
+// courante. Renvoie le mesh correspondant à `activeSm`. Utilisé au 1er sculpt/retexture d'un rig posé.
+export function bakeRiggedToStatic(activeSm) {
+  const rig = activeSm.userData && activeSm.userData.rig; if (!rig) return activeSm;
+  rig.root.updateWorldMatrix(true, true);
+  const v = new THREE.Vector3();
+  let newActive = null; const created = [];
+  for (const sm of rig.skinned) {
+    const src = sm.geometry, n = src.attributes.position.count, posW = new Float32Array(n * 3);
+    sm.updateMatrixWorld(true);
+    for (let i = 0; i < n; i++) { v.fromBufferAttribute(src.attributes.position, i); sm.applyBoneTransform(i, v); v.applyMatrix4(sm.matrixWorld); posW[i * 3] = v.x; posW[i * 3 + 1] = v.y; posW[i * 3 + 2] = v.z; }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(posW, 3));
+    if (src.attributes.uv) g.setAttribute('uv', new THREE.BufferAttribute(src.attributes.uv.array.slice(), 2));
+    if (src.attributes.color) g.setAttribute('color', new THREE.BufferAttribute(src.attributes.color.array.slice(), 3));
+    if (src.index) { const ia = src.index.array; g.setIndex(new THREE.BufferAttribute(ia.slice ? ia.slice() : new Uint32Array(ia), 1)); }
+    g.computeVertexNormals();
+    const baseMat = sm.userData.baseMat || sm.material;
+    const plain = createObject(g, baseMat && baseMat.clone ? baseMat.clone() : new THREE.MeshStandardMaterial(), sm.name || 'Posé');
+    created.push(plain);
+    if (sm === activeSm) newActive = plain;
+  }
+  disposeRig(activeSm); // retire root + helper + toutes les skinned meshes du rig de la scène/liste
+  _onObjectsChanged();
+  return newActive || created[0] || null;
+}
+
 // Vide la scène (bouton "Nouvelle scène").
 export function newScene() {
   disposeAllObjects();
@@ -533,9 +611,10 @@ function reorderSpatially(geometry) {
   for (let n = 0; n < count; n++) remap[order[n]] = n;
 
   reorderAttribute(geometry, 'position', order);
-  if (geometry.attributes.normal) reorderAttribute(geometry, 'normal', order);
-  if (geometry.attributes.uv) reorderAttribute(geometry, 'uv', order);
-  if (geometry.attributes.color) reorderAttribute(geometry, 'color', order);
+  // skinIndex/skinWeight/tangent DOIVENT être permutés avec les positions pour ne pas casser le skin.
+  for (const a of ['normal', 'uv', 'uv2', 'color', 'skinIndex', 'skinWeight', 'tangent']) {
+    if (geometry.attributes[a]) reorderAttribute(geometry, a, order);
+  }
 
   const idx = geometry.index.array;
   for (let i = 0; i < idx.length; i++) idx[i] = remap[idx[i]];
@@ -569,7 +648,7 @@ function reorderAttribute(geometry, name, order) {
     const o = order[n];
     for (let d = 0; d < dim; d++) dst[n * dim + d] = src[o * dim + d];
   }
-  const na = new THREE.BufferAttribute(dst, dim);
+  const na = new THREE.BufferAttribute(dst, dim, attr.normalized);
   na.setUsage(attr.usage);
   geometry.setAttribute(name, na);
 }

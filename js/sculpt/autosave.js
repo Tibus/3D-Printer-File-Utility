@@ -68,9 +68,11 @@ async function serializeObject(mesh) {
 }
 
 export async function saveScene(objects, meta) {
-  if (!objects.length) { await clearScene(); return; }
+  // Les objets riggés (squelette) ne sont pas sérialisés par l'autosave (skin/anim complexes) -> ignorés.
+  const saveable = objects.filter((m) => !(m.userData && m.userData.isRig));
+  if (!saveable.length) { await clearScene(); return; }
   const serialized = [];
-  for (const m of objects) serialized.push(await serializeObject(m));
+  for (const m of saveable) serialized.push(await serializeObject(m));
   await idbPut({ v: 1, savedAt: meta.now || 0, objects: serialized, meta });
 }
 

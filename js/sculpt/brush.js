@@ -120,21 +120,22 @@ export function hideBrushCursor() {
 
 // hit : collision surface. showRing=false pendant un stroke -> on cache le cercle d'influence
 // mais on garde le POINT de collision visible (façon Nomad).
-export function updateBrushCursor(hit, orient = true, showRing = true) {
+export function updateBrushCursor(hit, orient = true, showRing = true, rad = state.params.size, nrm = null) {
   const brush = state.brushMesh, dot = state.brushDot;
   if (!hit) { if (brush) brush.visible = false; if (dot) dot.visible = false; return; }
   if (dot) {
     dot.visible = true;
     dot.position.copy(hit.point);
-    dot.scale.setScalar(Math.max(state.params.size * 0.05, 1e-4)); // petit point proportionnel
+    dot.scale.setScalar(Math.max(rad * 0.05, 1e-4)); // petit point proportionnel
   }
   brush.visible = showRing;
   if (!showRing) return; // stroke : cercle caché, on ne l'oriente pas
   brush.position.copy(hit.point);
-  brush.scale.setScalar(state.params.size);
+  brush.scale.setScalar(rad);
   if (!orient) return;
+  if (nrm) { brush.quaternion.setFromUnitVectors(_up, _tempVec.copy(nrm).normalize()); return; } // normale fournie (ex. surface posée)
 
-  const radius = state.params.size * CURSOR_NORMAL_FACTOR;
+  const radius = rad * CURSOR_NORMAL_FACTOR;
   const smoothed = averageNormalWorld(hit.point, radius);
   if (smoothed) {
     brush.quaternion.setFromUnitVectors(_up, smoothed);
@@ -766,6 +767,15 @@ function buildRuns(indexSet, maxGap = 32) {
   }
   runs.push(s, prev - s + 1);
   return runs;
+}
+
+// Collecte les vertices sous un pinceau (sphère monde) via le BVH de la cible courante. Renvoie les
+// indices (tableau réutilisé, à consommer immédiatement) + le centre local. Pour weight-paint / outils tiers.
+export function brushCollect(worldPoint, radius) {
+  if (!state.targetMesh) return { idx: _idxArr, count: 0, cx: 0, cy: 0, cz: 0 };
+  toLocal(worldPoint, _localCenter);
+  collectInSphere(_localCenter, radius);
+  return { idx: _idxArr, count: _idxCount, cx: _localCenter.x, cy: _localCenter.y, cz: _localCenter.z };
 }
 
 // ---------- Vertex Paint : peinture de couleur EXACTE (pas de fade) ----------

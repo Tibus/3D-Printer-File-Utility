@@ -46,7 +46,8 @@ export const state = {
   // Paramètres de l'outil (pilotés par l'UI)
   params: {
     tool: 'draw',             // 'draw' | 'smooth' | 'flatten' | 'move'
-    size: 0.12,               // rayon du brush (unités monde locales du mesh)
+    size: 0.12,               // rayon monde du brush (DÉRIVÉ de sizeFrac chaque coup -> ne pas régler à la main)
+    sizeFrac: 0.12,           // taille du brush en FRACTION d'écran (constante à l'écran, suit le zoom) — c'est ce que règle le slider
     intensity: 100,           // % (0..200), 100 = référence
     invert: false,            // remove au lieu d'add (pour 'draw')
     symmetryX: false,

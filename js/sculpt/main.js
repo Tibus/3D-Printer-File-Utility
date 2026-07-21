@@ -30,6 +30,10 @@ import { captureView, reprojectToUV, compositeLayers, applyTextureCanvas, hasPen
 import { splitByMask } from './split-mask.js';
 import { pushGeom, pushAction, pushMask, pushColor, undo, redo, setHistoryListener } from './history.js';
 import { getPalette, ensureColorAttr, eyedropSample, applyPaletteFromTexture, buildVertexPaint3MF, rgbToHex, hexToRgb, nearestPaletteIndex } from './vertexpaint.js';
+import { isRig, rigOf, bakePose, isPoseDirty, markPoseDirty, resetRigPose, updateRigs, playClip, setPlaying, stopClip, seekClip, clipInfo, toggleSkeleton } from './rig.js';
+import { loadRetargetSource, playRetargetClip, disposeRetarget } from './rig-retarget.js';
+import { enterPose, exitPose, isPoseActive, pickBoneAtMouse, resetPose, updatePoseMarkers, selectByIndex, poseBones, selectedIndex, selectedBone, isTwistBone, setGizmoMode, markerUnderMouse } from './rig-pose.js';
+import { enterWeightPaint, exitWeightPaint, isWeightPaintActive, setPaintBone, paintAt as wpPaintAt, smooth as wpSmooth, refreshWeights, beginWeightStroke, endWeightStroke, applySkinRecord, pickPoint as wpPickPoint } from './rig-weightpaint.js';
 import { initGizmo, activateGizmo, deactivateGizmo, setAltPivot, isGizmoActive } from './gizmo.js';
 import { ensureMask, invertMask, clearMask, setMaskBlur, rebuildMask, bakeMaskBlur, maskRecordBegin, maskRecordEnd } from './mask.js';
 import { exportGLB, exportOBJ } from './exporter.js';
@@ -67,12 +71,22 @@ const dom = state.renderer.domElement;
 
 // Ajustement du rayon du brush en maintenant X : la souris change le diamètre.
 let radiusMode = false, radiusStartX = 0, radiusStartSize = 0, radiusAnchor = null, lastClientX = 0;
-const RADIUS_PER_PX = 0.0012; // vitesse d'ajustement (unités monde / pixel)
+const RADIUS_PER_PX = 0.0012; // vitesse d'ajustement (fraction d'écran / pixel)
 function setBrushSize(v) {
   const r = document.getElementById('size-range'), num = document.getElementById('size-num');
   v = Math.max(parseFloat(r.min), Math.min(parseFloat(r.max), v));
-  state.params.size = v; r.value = v; num.value = v.toFixed(3);
+  state.params.sizeFrac = v; r.value = v; num.value = v.toFixed(3);
 }
+
+// Rayon MONDE d'un pinceau à `worldPoint` pour une fraction d'écran `frac` : frac · distance · tan(fov/2)
+// -> taille ÉCRAN constante quel que soit le zoom. Base commune brosse sculpt / retexture / weight paint.
+function screenWorldRadius(worldPoint, frac) {
+  const d = state.camera.position.distanceTo(worldPoint);
+  return Math.max(1e-4, frac * d * Math.tan(THREE.MathUtils.degToRad(state.camera.fov) / 2));
+}
+// Recale state.params.size (rayon monde effectif) sur la fraction d'écran, au point donné. À appeler
+// juste avant chaque coup / affichage du curseur : brush.js lit state.params.size tel quel.
+function syncBrushRadius(worldPoint) { if (worldPoint) state.params.size = screenWorldRadius(worldPoint, state.params.sizeFrac); }
 let sculpting = false;   // un stroke est en cours (pointerdown démarré sur le mesh)
 
 // ---------- Résolution dynamique (pendant le sculpt uniquement) ----------
@@ -112,6 +126,7 @@ const _ls = { x: 0, y: 0, z: 0, has: false };
 // Un « coup » à la position p : sculpt géométrique OU peinture de couleur (Vertex Paint).
 const _vpMirror = new THREE.Vector3();
 function strokeStamp(p, mods) {
+  syncBrushRadius(p); // rayon monde effectif = fraction d'écran au point du coup (taille écran constante)
   if (state.params.tool === 'vertexpaint') {
     const mesh = state.targetMesh; if (!mesh) return;
     const pal = getPalette(mesh), c = pal[_vpSel]; if (!c) return;
@@ -123,6 +138,7 @@ function strokeStamp(p, mods) {
 }
 
 function stampSpaced(p, mods) {
+  syncBrushRadius(p); // rayon monde à jour avant de calculer l'espacement des coups
   if (!_ls.has) { strokeStamp(p, mods); _ls.x = p.x; _ls.y = p.y; _ls.z = p.z; _ls.has = true; return; }
   const spacing = Math.max(1e-4, state.params.size * SPACING_FRAC);
   let dx = p.x - _ls.x, dy = p.y - _ls.y, dz = p.z - _ls.z;
@@ -243,6 +259,29 @@ function performSplit() {
 
 // ---------- Liste d'objets ----------
 
+// Cadre la caméra sur un objet (recentre + distance adaptée pour le voir en entier), en conservant
+// l'angle de vue courant.
+function focusObject(mesh) {
+  if (!mesh) return;
+  mesh.updateMatrixWorld(true);
+  // precise=true : itère les sommets réels (ignore le boundingBox en cache, obsolète après sculpt) ->
+  // centre = vrai centre de la bounding box (≠ origine de l'objet).
+  const box = new THREE.Box3().setFromObject(mesh, true);
+  if (box.isEmpty()) return;
+  const center = box.getCenter(new THREE.Vector3());
+  const r = box.getBoundingSphere(new THREE.Sphere()).radius || 1;
+  const cam = state.camera;
+  const vHalf = THREE.MathUtils.degToRad(cam.fov) / 2;
+  const hHalf = Math.atan(Math.tan(vHalf) * cam.aspect);
+  const dist = (r / Math.sin(Math.min(vHalf, hHalf))) * 1.15; // marge 15 %
+  const dir = new THREE.Vector3().subVectors(cam.position, state.controls.target);
+  if (dir.lengthSq() < 1e-8) dir.set(0, 0, 1); dir.normalize();
+  state.controls.target.copy(center);
+  cam.position.copy(center).addScaledVector(dir, dist);
+  cam.near = Math.max(0.001, dist / 200); cam.far = dist * 200; cam.updateProjectionMatrix();
+  state.controls.update();
+}
+
 function renderObjectList() {
   const list = document.getElementById('object-list');
   list.innerHTML = '';
@@ -256,9 +295,12 @@ function renderObjectList() {
 
     const name = document.createElement('span');
     name.className = 'obj-name';
+    const rigged = isRig(m);
     const tri = m.geometry.index ? m.geometry.index.count / 3 : m.geometry.attributes.position.count / 3;
-    name.textContent = `${m.name} (${tri.toLocaleString('fr-FR')} tri)`;
+    name.textContent = `${rigged ? '🦴 ' : ''}${m.name} (${tri.toLocaleString('fr-FR')} tri)`;
+    if (rigged) name.title = 'Modèle riggé — sculpt/retexture en pose de repos, animations via l’outil Bones';
     name.addEventListener('click', () => { if (m.visible) { setActiveObject(m); if (isGizmoActive()) activateGizmo(m); renderObjectList(); } });
+    row.addEventListener('dblclick', () => { if (m.visible) focusObject(m); }); // double-clic : cadrer l'objet
 
     const eye = document.createElement('button');
     eye.className = 'obj-btn';
@@ -267,6 +309,7 @@ function renderObjectList() {
     eye.addEventListener('click', (ev) => {
       ev.stopPropagation();
       m.visible = !m.visible;
+      if (rigged && rigOf(m) && rigOf(m).helper) rigOf(m).helper.visible = m.visible; // le squelette suit l'objet
       if (!m.visible && state.targetMesh === m) {
         // l'objet actif ne doit jamais rester caché : bascule vers un visible, ou aucun.
         const n = state.objects.find((o) => o.visible) || null;
@@ -322,7 +365,8 @@ function renderObjectList() {
       );
     });
 
-    row.append(name, eye, dup, del);
+    if (rigged) row.append(name, eye, del); // pas de duplication pour un objet riggé
+    else row.append(name, eye, dup, del);
     list.appendChild(row);
   });
   refreshBoolTargets();
@@ -406,7 +450,7 @@ restoreAutosave();
 dom.addEventListener('pointerdown', (e) => {
   if (e.button !== 0 || !state.targetMesh || !state.targetMesh.visible) return;
   if (radiusMode) return; // réglage du rayon en cours (X maintenu)
-  if (state.params.tool === 'gizmo' || state.params.tool === 'retexture' || state.params.tool === 'other') return; // pas de sculpt
+  if (state.params.tool === 'gizmo' || state.params.tool === 'retexture' || state.params.tool === 'other' || state.params.tool === 'bones') return; // pas de sculpt
   if (state.params.tool === 'split') { startLasso(e); return; }
   // Vertex Paint, pipette : panel pipette -> AJOUTE la couleur ; « i » maintenu -> SÉLECTIONNE la couleur
   // de palette la plus proche. Dans les deux cas : pas de peinture (retour immédiat).
@@ -417,6 +461,9 @@ dom.addEventListener('pointerdown', (e) => {
   setMouseFromEvent(e);
   const hit = raycastSurface();
   if (!hit) return; // clic dans le vide => laisser OrbitControls tourner
+  // Sculpt d'un rig POSÉ : bake la pose comme NOUVEAU bind (garde le squelette). La forme posée devient la
+  // géométrie -> BVH/topologie cohérents, pose conservée, rig re-posable. Une fois (flag poseDirty).
+  if (isRig(state.targetMesh) && isPoseDirty(state.targetMesh)) { bakePose(state.targetMesh); setActiveObject(state.targetMesh); }
 
   sculpting = true;
   setSculptResolution(true);
@@ -451,9 +498,15 @@ function processMove() {
   if (!sculpting) {
     // retexture : on montre le cercle d'influence (comme les brosses) pour voir la zone peinte du masque
     if (state.params.tool === 'split' || state.params.tool === 'gizmo' || state.params.tool === 'other') { hideBrushCursor(); return; }
+    if (state.params.tool === 'bones') {
+      // weight paint : cercle orienté normale + rayon lié au zoom, MASQUÉ au survol d'un os (on sélectionnerait).
+      if (isWeightPaintActive() && !markerUnderMouse(true)) { const h = wpPickPoint(state.mouse); if (h) updateBrushCursor(h, true, true, wpWorldRadius(h.point), h.face ? h.face.normal : null); else hideBrushCursor(); }
+      else hideBrushCursor();
+      return;
+    }
     if (state.params.tool === 'vertexpaint' && _vpKeyPick) { const h = raycastSurface(); if (h) vpPickSelect(h); hideBrushCursor(); return; } // « i » : pipette continue
     if (state.params.tool === 'vertexpaint' && _vpPipette) { hideBrushCursor(); return; } // pipette panel : pas de cercle
-    updateBrushCursor(raycastSurface());
+    { const h = raycastSurface(); if (h) syncBrushRadius(h.point); updateBrushCursor(h); } // cercle : rayon = fraction d'écran au point survolé
     return;
   }
   const st = performance.now();
@@ -471,7 +524,7 @@ dom.addEventListener('pointermove', (e) => {
   lastClientX = e.clientX;
   if (radiusMode) { // X maintenu : la souris règle le rayon du brush
     setBrushSize(radiusStartSize + (e.clientX - radiusStartX) * RADIUS_PER_PX);
-    if (radiusAnchor) updateBrushCursor(radiusAnchor, false);
+    if (radiusAnchor) { syncBrushRadius(radiusAnchor.point); updateBrushCursor(radiusAnchor, false); }
     return;
   }
   if (lassoing) { addLassoPoint(e); return; }
@@ -913,6 +966,7 @@ function retexPaintFrame() {
   _retexScheduled = false;
   const mesh = state.targetMesh, l = retexPaintTarget();
   if (!_retexPainting || !_retexPendingPt || !mesh || !l) return;
+  syncBrushRadius(_retexPendingPt); // rayon monde = fraction d'écran au point peint (taille écran constante)
   // Calque relief : on peint son MASQUE (poids par sommet) -> repositionne les vertices, pas de masque UV.
   if (l.type === 'relief') {
     if (paintReliefMaskAt(_retexPendingPt.clone(), l, _retexErase)) {
@@ -938,6 +992,7 @@ dom.addEventListener('pointerdown', (e) => {
   setMouseFromEvent(e);
   const hit = raycastSurface();
   if (!hit) return;
+  if (isRig(state.targetMesh) && isPoseDirty(state.targetMesh)) { bakePose(state.targetMesh); setActiveObject(state.targetMesh); } // retexture d'un rig posé : bake la pose (garde le squelette)
   _retexPainting = true; _retexErase = e.altKey || e.ctrlKey || e.metaKey;
   state.controls.enabled = false;
   try { dom.setPointerCapture(e.pointerId); } catch (_) {}
@@ -1620,6 +1675,14 @@ toolButtons.forEach((btn) => {
     document.getElementById('mask-panel').style.display = isMask ? 'flex' : 'none';
     document.getElementById('retexture-panel').style.display = isRetex ? 'flex' : 'none';
     document.getElementById('vertexpaint-panel').style.display = isVP ? 'flex' : 'none';
+    const isBones = t === 'bones';
+    document.getElementById('bones-panel').style.display = isBones ? 'flex' : 'none';
+    if (!isBones) {
+      if (isPoseActive()) exitPose(); if (isWeightPaintActive()) exitWeightPaint(); // quitte pose/weight hors outil Bones
+      // Bake la pose DÈS la sortie du menu squelette (pas au 1er clic) -> géométrie + BVH prêts pour le hover.
+      if (isRig(state.targetMesh) && isPoseDirty(state.targetMesh)) { bakePose(state.targetMesh); setActiveObject(state.targetMesh); }
+    }
+    if (isBones) renderBonesPanel();
     if (!isVP) dom.style.cursor = ''; // curseur pipette éventuel réinitialisé hors Vertex Paint
     if (isVP && state.targetMesh) {
       const mVP = state.targetMesh;
@@ -1777,6 +1840,244 @@ window.addEventListener('keyup', (e) => {
   });
 }
 
+// ---------- Bones : panneau (affichage squelette + lecture/import d'animations) ----------
+let _bonesScrubbing = false;
+function bonesTarget() { const m = state.targetMesh; return (m && isRig(m)) ? m : null; }
+function renderBonesPanel() {
+  const empty = document.getElementById('bones-empty'), ctrls = document.getElementById('bones-controls');
+  if (!empty || !ctrls) return;
+  const obj = bonesTarget();
+  if (!obj) { empty.style.display = ''; ctrls.style.display = 'none'; return; }
+  empty.style.display = 'none'; ctrls.style.display = 'flex';
+  const rig = rigOf(obj);
+  const skel = document.getElementById('bones-skel'); if (skel) skel.checked = rig.helper ? rig.helper.visible : true;
+  syncBonesModeUI();
+  const listBox = document.getElementById('bones-anim-list'); listBox.innerHTML = '';
+  const rt = rig.retarget;
+  if (!rig.animations.length && !(rt && rt.animations.length)) listBox.innerHTML = '<div style="font-size:11px;color:#888;">Aucune animation — importe un GLB/FBX ci-dessous.</div>';
+  // Animations embarquées (lecture directe).
+  rig.animations.forEach((clip, i) => {
+    const b = document.createElement('div'); b.className = 'obj-row' + (!rig.retargeting && i === rig.clipIndex ? ' active' : '');
+    b.style.cssText = 'font-size:11px;cursor:pointer;';
+    b.textContent = `▶ ${clip.name || 'clip ' + (i + 1)} (${(clip.duration || 0).toFixed(1)}s)`;
+    b.onclick = () => { disposeRetarget(rig); playClip(obj, i); renderBonesPanel(); };
+    listBox.appendChild(b);
+  });
+  // Animations retargetées (mapping d'os).
+  if (rt && rt.animations.length) rt.animations.forEach((clip, i) => {
+    const b = document.createElement('div'); b.className = 'obj-row' + (rig.retargeting && i === rt.clipIndex ? ' active' : '');
+    b.style.cssText = 'font-size:11px;cursor:pointer;';
+    b.textContent = `🔗 ${clip.name || 'clip ' + (i + 1)} (${(clip.duration || 0).toFixed(1)}s)`;
+    b.title = 'Animation retargetée (mapping d’os)';
+    b.onclick = () => { playRetargetClip(obj, i); renderBonesPanel(); };
+    listBox.appendChild(b);
+  });
+  updateBonesTimeUI();
+}
+function updateBonesTimeUI() {
+  const scrub = document.getElementById('bones-scrub'); if (!scrub) return;
+  const obj = bonesTarget(); const info = obj ? clipInfo(obj) : null;
+  const lbl = document.getElementById('bones-time'), play = document.getElementById('bones-play');
+  if (info) {
+    if (!_bonesScrubbing) scrub.value = String(Math.round((info.time / (info.duration || 1)) * 1000));
+    if (lbl) lbl.textContent = `${info.time.toFixed(2)} / ${info.duration.toFixed(2)}`;
+    if (play) play.textContent = info.playing ? '⏸️ Pause' : '⏯️ Play';
+  } else { scrub.value = '0'; if (lbl) lbl.textContent = '0.00 / 0.00'; if (play) play.textContent = '⏯️ Play'; }
+}
+// --- UI d'édition de pose (liste hiérarchique + schéma SVG + rotations), calquée sur GLB-Bones-editor ---
+function renderPoseList() {
+  const box = document.getElementById('bones-bone-list'); if (!box) return; box.innerHTML = '';
+  const bones = poseBones(); if (!bones.length) { box.innerHTML = '<div style="color:#888;">Aucun os</div>'; return; }
+  const idxOf = new Map(); bones.forEach((b, i) => idxOf.set(b, i));
+  const roots = bones.filter((b) => { let p = b.parent; while (p) { if (idxOf.has(p)) return false; p = p.parent; } return true; });
+  const add = (bone, depth) => {
+    const i = idxOf.get(bone); if (i === undefined) return;
+    const twist = isTwistBone(bone);
+    const row = document.createElement('div');
+    row.className = 'bone-item' + (i === selectedIndex() ? ' active' : '');
+    row.dataset.index = String(i);
+    row.style.cssText = `padding:2px 4px; padding-left:${4 + depth * 12}px; cursor:pointer; color:${twist ? '#888' : (i === selectedIndex() ? '#ffd23f' : '#cfd')}; border-radius:3px;` + (i === selectedIndex() ? 'background:#243;' : '');
+    row.textContent = (twist ? '↻ ' : '') + (bone.name || `Bone ${i + 1}`);
+    row.title = twist ? 'Os Twist — sélectionnable ici, pas au clic souris (rotation Y seule)' : bone.name;
+    row.onclick = () => selectByIndex(i); // twist inclus : sélection via la liste autorisée
+    box.appendChild(row);
+    bone.children.forEach((c) => { if (c.isBone && idxOf.has(c)) add(c, depth + 1); });
+  };
+  roots.forEach((r) => add(r, 0));
+}
+function syncPoseRotUI(index) {
+  const rot = document.getElementById('bones-rot');
+  const name = document.getElementById('bones-sel-name');
+  const bone = index >= 0 ? poseBones()[index] : null;
+  if (!bone) { if (rot) rot.style.display = 'none'; if (name) name.textContent = 'Aucun os sélectionné'; return; }
+  if (name) name.textContent = bone.name || `Bone ${index + 1}`;
+  if (rot) rot.style.display = 'flex';
+  const d = (a) => Math.round(THREE.MathUtils.radToDeg(bone.rotation[a]));
+  for (const a of ['x', 'y', 'z']) { const s = document.getElementById('pose-rot-' + a), v = document.getElementById('pose-rot-' + a + '-v'); if (s) s.value = String(d(a)); if (v) v.textContent = String(d(a)); }
+}
+// Surlignage partagé (liste + schéma) + auto-scroll. Léger (appelé aussi pendant le drag du gizmo).
+let _lastPoseScroll = -1;
+function highlightBone(index) {
+  const bones = poseBones();
+  let selRow = null;
+  document.querySelectorAll('#bones-bone-list .bone-item').forEach((row) => {
+    const i = parseInt(row.dataset.index), sel = i === index, twist = bones[i] && isTwistBone(bones[i]);
+    row.style.background = sel ? '#243' : ''; row.style.color = sel ? '#ffd23f' : (twist ? '#888' : '#cfd');
+    if (sel) selRow = row;
+  });
+  if (selRow && index !== _lastPoseScroll) selRow.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  _lastPoseScroll = index;
+  const selName = index >= 0 ? (bones[index].name || '') : '';
+  document.querySelectorAll('#bones-bone-schema .bone-node').forEach((n) => n.setAttribute('fill', n.dataset.bone === selName ? '#ffd23f' : '#4a9aff'));
+  const nm = document.getElementById('bones-sel-name'); if (nm) nm.textContent = index >= 0 ? (selName || `Bone ${index + 1}`) : 'Aucun os sélectionné';
+}
+// Sélection en mode POSE : surlignage + sliders de rotation.
+function onPoseSelect(index) { highlightBone(index); syncPoseRotUI(index); }
+// Sélection en mode WEIGHT PAINT : surlignage + définit l'os cible + rafraîchit la heatmap.
+function onWeightSelect(index) { highlightBone(index); setPaintBone(index >= 0 ? poseBones()[index] : null); }
+
+// Rayon du pinceau weight paint : lié au ZOOM (fraction d'écran constante). frac = valeur du slider ;
+// rayon monde = frac · distance(caméra, point) · tan(fov/2) -> même taille à l'écran quel que soit le zoom.
+function wpWorldRadius(worldPoint) {
+  const el = document.getElementById('bones-wp-radius');
+  const frac = el ? parseFloat(el.value) : 0.06;
+  const d = state.camera.position.distanceTo(worldPoint);
+  return Math.max(1e-4, frac * d * Math.tan(THREE.MathUtils.degToRad(state.camera.fov) / 2));
+}
+
+// Affiche/masque les blocs UI selon le mode bones actif (pose vs weight paint) + rebuild liste.
+function syncBonesModeUI() {
+  const weight = isWeightPaintActive(), pose = isPoseActive() && !weight, sel = pose || weight;
+  const g = (id) => document.getElementById(id);
+  if (g('bones-sel-ui')) g('bones-sel-ui').style.display = sel ? 'flex' : 'none';
+  if (g('bones-pose-only')) g('bones-pose-only').style.display = pose ? 'flex' : 'none';
+  if (g('bones-weight-only')) g('bones-weight-only').style.display = weight ? 'flex' : 'none';
+  if (g('bones-pose')) g('bones-pose').classList.toggle('active', pose);
+  if (g('bones-weight')) g('bones-weight').classList.toggle('active', weight);
+  if (sel) { renderPoseList(); highlightBone(selectedIndex()); if (pose) syncPoseRotUI(selectedIndex()); }
+}
+
+{
+  const skel = document.getElementById('bones-skel');
+  if (skel) skel.addEventListener('change', () => { const o = bonesTarget(); if (o) toggleSkeleton(o, skel.checked); });
+  const play = document.getElementById('bones-play');
+  if (play) play.addEventListener('click', () => {
+    const o = bonesTarget(); if (!o) return; const rig = rigOf(o);
+    const act = rig.retargeting && rig.retarget ? rig.retarget.action : rig.action;
+    if (act) setPlaying(o, !rig.playing);
+    else if (rig.animations.length) playClip(o, 0);
+    else if (rig.retarget && rig.retarget.animations.length) playRetargetClip(o, 0);
+    updateBonesTimeUI();
+  });
+  const stop = document.getElementById('bones-stop');
+  if (stop) stop.addEventListener('click', () => { const o = bonesTarget(); if (o) { stopClip(o); renderBonesPanel(); } });
+  const scrub = document.getElementById('bones-scrub');
+  if (scrub) {
+    scrub.addEventListener('pointerdown', () => { _bonesScrubbing = true; });
+    scrub.addEventListener('input', () => { const o = bonesTarget(); const info = o && clipInfo(o); if (info) seekClip(o, (scrub.value / 1000) * info.duration); updateBonesTimeUI(); });
+    const end = () => { _bonesScrubbing = false; };
+    scrub.addEventListener('pointerup', end); scrub.addEventListener('change', end);
+  }
+  const poseBtn = document.getElementById('bones-pose'), weightBtn = document.getElementById('bones-weight');
+  if (poseBtn) poseBtn.addEventListener('click', () => {
+    const o = bonesTarget(); if (!o) return;
+    const sel = selectedIndex(); // conserve l'os sélectionné au changement de mode
+    if (isPoseActive() && !isWeightPaintActive()) { exitPose(); setStatus('Pose désactivée.'); }
+    else { exitWeightPaint(); enterPose(o, onPoseSelect); if (sel >= 0) selectByIndex(sel); setStatus('Pose : clique un os (3D, liste ou schéma) puis tourne/décale. Reclic = os empilé suivant.'); }
+    syncBonesModeUI();
+  });
+  if (weightBtn) weightBtn.addEventListener('click', () => {
+    const o = bonesTarget(); if (!o) return;
+    const sel = selectedIndex();
+    if (isWeightPaintActive()) { exitWeightPaint(); exitPose(); setStatus('Weight paint désactivé.'); }
+    else { exitPose(); enterPose(o, onWeightSelect, { noGizmo: true }); enterWeightPaint(o); if (sel >= 0) selectByIndex(sel); setStatus('Weight paint : clique un os cible, peins sur le mesh (Alt = retirer). La pose est conservée.'); }
+    syncBonesModeUI();
+  });
+  const poseReset = document.getElementById('bones-pose-reset');
+  if (poseReset) poseReset.addEventListener('click', () => { const o = bonesTarget(); if (!o) return; if (isPoseActive()) resetPose(); else resetRigPose(o); if (isWeightPaintActive()) refreshWeights(); setStatus('Pose / skin réinitialisés.'); });
+  // Bascule liste / schéma
+  const listBtn = document.getElementById('bones-list-btn'), schemaBtn = document.getElementById('bones-schema-btn');
+  const listBox = document.getElementById('bones-bone-list'), schemaBox = document.getElementById('bones-bone-schema');
+  if (listBtn) listBtn.addEventListener('click', () => { listBox.style.display = ''; schemaBox.style.display = 'none'; listBtn.classList.add('active'); schemaBtn.classList.remove('active'); });
+  if (schemaBtn) schemaBtn.addEventListener('click', () => { listBox.style.display = 'none'; schemaBox.style.display = ''; schemaBtn.classList.add('active'); listBtn.classList.remove('active'); });
+  // Clic sur le schéma SVG -> sélectionne l'os par nom (ignore les Twist non listés).
+  if (schemaBox) schemaBox.addEventListener('click', (e) => {
+    const node = e.target.closest('[data-bone]'); if (!node) return;
+    const bones = poseBones(); const i = bones.findIndex((b) => b.name === node.dataset.bone);
+    if (i >= 0) selectByIndex(i);
+  });
+  // Bascule gizmo rotation (pose) / translation (offset de joint).
+  const grot = document.getElementById('bones-gizmo-rot'), gtr = document.getElementById('bones-gizmo-tr');
+  if (grot) grot.addEventListener('click', () => { setGizmoMode('rotate'); grot.classList.add('active'); gtr.classList.remove('active'); });
+  if (gtr) gtr.addEventListener('click', () => { setGizmoMode('translate'); gtr.classList.add('active'); grot.classList.remove('active'); });
+  // Sliders de rotation de l'os sélectionné.
+  for (const a of ['x', 'y', 'z']) {
+    const s = document.getElementById('pose-rot-' + a);
+    if (s) s.addEventListener('input', () => {
+      const b = selectedBone(); if (!b) return;
+      b.rotation[a] = THREE.MathUtils.degToRad(parseFloat(s.value));
+      const v = document.getElementById('pose-rot-' + a + '-v'); if (v) v.textContent = s.value;
+      b.updateMatrixWorld();
+      markPoseDirty(state.targetMesh);
+    });
+  }
+  // Sélection d'os en mode pose (capture : avant OrbitControls) — clic sur un marqueur = pas d'orbite.
+  dom.addEventListener('pointerdown', (e) => {
+    if (state.params.tool !== 'bones' || !isPoseActive() || isWeightPaintActive() || e.button !== 0) return;
+    setMouseFromEvent(e);
+    if (pickBoneAtMouse()) state.controls.enabled = false;
+  }, true);
+  dom.addEventListener('pointerup', () => { if (state.params.tool === 'bones' && isPoseActive() && !isWeightPaintActive()) state.controls.enabled = true; });
+
+  // ---- Weight paint : sélection d'os cible (marqueur) OU peinture sur le mesh (drag) ----
+  let _wpPainting = false, _wpErase = false, _wpPt = null, _wpSched = false;
+  // Force 0..2 (bien plus douce qu'avant) -> delta par frame ≈ valeur × 0.05.
+  const wpStrength = () => (parseFloat(document.getElementById('bones-wp-strength').value) || 0) * 0.05;
+  const pushSkin = (rec) => { if (rec) pushAction(() => applySkinRecord(rec, false), () => applySkinRecord(rec, true)); };
+  function wpFrame() { _wpSched = false; if (!_wpPainting || !_wpPt) return; wpPaintAt(_wpPt, wpWorldRadius(_wpPt), wpStrength(), _wpErase); _wpPt = null; }
+  function wpSchedule() { if (!_wpSched) { _wpSched = true; requestAnimationFrame(wpFrame); } }
+  dom.addEventListener('pointerdown', (e) => {
+    if (state.params.tool !== 'bones' || !isWeightPaintActive() || e.button !== 0) return;
+    setMouseFromEvent(e);
+    if (pickBoneAtMouse(true)) { state.controls.enabled = false; return; } // marqueur -> os cible (cyclage twists inclus)
+    const hit = wpPickPoint(state.mouse); if (!hit) return; // raycast la surface POSÉE (proxy)
+    _wpPainting = true; _wpErase = e.altKey || e.ctrlKey || e.metaKey; state.controls.enabled = false;
+    beginWeightStroke(); // undo
+    try { dom.setPointerCapture(e.pointerId); } catch (_) {}
+    _wpPt = hit.point.clone(); wpSchedule();
+  }, true);
+  dom.addEventListener('pointermove', (e) => {
+    if (!_wpPainting) return; setMouseFromEvent(e); const hit = wpPickPoint(state.mouse); if (hit) { _wpPt = hit.point.clone(); wpSchedule(); }
+  });
+  const wpEnd = (e) => {
+    if (state.params.tool === 'bones' && isWeightPaintActive()) state.controls.enabled = true; // réactive l'orbite (y compris après un clic de sélection d'os)
+    if (!_wpPainting) return;
+    _wpPainting = false;
+    if (e && e.pointerId !== undefined) { try { dom.releasePointerCapture(e.pointerId); } catch (_) {} }
+    pushSkin(endWeightStroke());
+  };
+  dom.addEventListener('pointerup', wpEnd); dom.addEventListener('pointercancel', wpEnd);
+  const wpRad = document.getElementById('bones-wp-radius');
+  if (wpRad) wpRad.addEventListener('input', () => { document.getElementById('bones-wp-radius-v').textContent = Math.round(parseFloat(wpRad.value) * 100) + '%'; });
+  const wpStr = document.getElementById('bones-wp-strength');
+  if (wpStr) wpStr.addEventListener('input', () => { document.getElementById('bones-wp-strength-v').textContent = wpStr.value; });
+  const wpSmoothBtn = document.getElementById('bones-wp-smooth');
+  if (wpSmoothBtn) wpSmoothBtn.addEventListener('click', () => { beginWeightStroke(); wpSmooth(); pushSkin(endWeightStroke()); setStatus('Poids lissés.'); });
+
+  const retInput = document.getElementById('bones-retarget-input');
+  if (retInput) retInput.addEventListener('change', async (e) => {
+    const o = bonesTarget(); const file = e.target.files && e.target.files[0]; if (!o || !file) { return; }
+    showLoading(true, 'Import + retarget…');
+    try {
+      const n = await loadRetargetSource(o, file);
+      if (n) { playRetargetClip(o, 0); setStatus(`${n} animation(s) retargetée(s) — mapping d’os appliqué.`); }
+      else setStatus('Aucune animation dans ce fichier.');
+      renderBonesPanel();
+    } catch (err) { console.error(err); setStatus(`Retarget : ${err.message}`); }
+    finally { showLoading(false); e.target.value = ''; }
+  });
+}
+
 // Panneau masque : inverser / effacer / flou
 document.getElementById('mask-invert').addEventListener('click', () => {
   if (!state.targetMesh) return;
@@ -1874,7 +2175,7 @@ function bindSlider(rangeId, numId, key, format) {
   });
   apply(state.params[key]);
 }
-bindSlider('size-range', 'size-num', 'size', (v) => v.toFixed(3));
+bindSlider('size-range', 'size-num', 'sizeFrac', (v) => v.toFixed(3)); // le slider règle la fraction d'écran (state.params.size est dérivé par coup)
 
 // Intensité : slider seul + affichage en % (pas de champ éditable).
 {
@@ -2025,11 +2326,11 @@ function enterRadiusMode() {
   if (t === 'split' || t === 'gizmo' || t === 'move' || t === 'other') return; // sans objet de brush
   radiusMode = true;
   radiusStartX = lastClientX;
-  radiusStartSize = state.params.size;
+  radiusStartSize = state.params.sizeFrac; // on règle la FRACTION d'écran
   radiusAnchor = raycastSurface(); // point figé sous le curseur
   state.controls.enabled = false;
-  if (radiusAnchor) { state.brushMesh.visible = true; updateBrushCursor(radiusAnchor, false); }
-  setStatus(`Rayon : ${state.params.size.toFixed(3)} — bouge la souris, relâche X`);
+  if (radiusAnchor) { state.brushMesh.visible = true; syncBrushRadius(radiusAnchor.point); updateBrushCursor(radiusAnchor, false); }
+  setStatus(`Taille : ${state.params.sizeFrac.toFixed(3)} — bouge la souris, relâche X`);
 }
 function exitRadiusMode() {
   if (!radiusMode) return;
@@ -2042,6 +2343,9 @@ function exitRadiusMode() {
 function animate() {
   requestAnimationFrame(animate);
   state.controls.update();
+  updateRigs(); // met à jour les mixers d'animation des objets riggés en lecture
+  if (isPoseActive()) updatePoseMarkers(); // les marqueurs d'os suivent la pose
+  if (state.params.tool === 'bones') updateBonesTimeUI(); // scrub/temps suivent la lecture
 
   const now = performance.now();
   const frame = now - perf.lastT;

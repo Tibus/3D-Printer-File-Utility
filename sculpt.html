@@ -96,6 +96,9 @@
     <button class="tool-btn" data-tool="vertexpaint" title="FDM export : peindre des couleurs par sommet depuis une palette, puis exporter en 3MF multicouleur (MMU)">
       <span class="tool-emoji">🖨️</span> FDM export
     </button>
+    <button class="tool-btn" data-tool="bones" title="Bones : afficher le squelette et jouer / importer des animations (modèle riggé requis)">
+      <span class="tool-emoji">🦴</span> Bones
+    </button>
     <button class="tool-btn" data-tool="other" title="Opérations sur le maillage (remesh, réparer, décimer, évider, orienter…)">
       <span class="tool-emoji">🧰</span> Autres
     </button>
@@ -169,6 +172,88 @@
     <button id="vp-export" class="control-btn" title="Exporter en 3MF multicouleur (segmentation MMU PrusaSlicer/Bambu), 1 slot filament par couleur de palette">💾 Exporter 3MF (MMU)</button>
   </div>
 
+  <!-- Bones : affichage du squelette + lecture / import d'animations (modèle riggé) -->
+  <div id="bones-panel" style="display:none; flex-direction:column; gap:10px;">
+    <div id="bones-empty" style="font-size:11.5px; line-height:1.4; color:#9a9ac0;">
+      Sélectionne un objet <strong>riggé</strong> (🦴) dans la liste. Charge un GLB/FBX avec squelette pour en obtenir un.
+    </div>
+    <div id="bones-controls" style="display:none; flex-direction:column; gap:10px;">
+      <label class="check" style="font-size:12px;"><input type="checkbox" id="bones-skel" checked><span>Afficher le squelette</span></label>
+      <div style="display:flex; gap:6px;">
+        <button id="bones-pose" class="control-btn" style="flex:1;" title="Éditer la pose : clique un os puis tourne/décale-le (le mesh se déforme)">🦿 Pose</button>
+        <button id="bones-weight" class="control-btn" style="flex:1;" title="Weight paint : clique un os cible puis peins ses poids de skinning sur le mesh (Alt = retirer)">🎨 Weight paint</button>
+      </div>
+      <button id="bones-pose-reset" class="control-btn" title="Réinitialiser la pose et le skin (rotations + positions + boneInverses)">↺ Reset pose / skin</button>
+
+      <!-- UI de sélection d'os (liste + schéma), partagée par Pose et Weight paint -->
+      <div id="bones-sel-ui" style="display:none; flex-direction:column; gap:8px;">
+        <div style="display:flex; gap:6px;">
+          <button id="bones-list-btn" class="control-btn active" style="flex:1;">📋 Liste</button>
+          <button id="bones-schema-btn" class="control-btn" style="flex:1;">🕴️ Schéma</button>
+        </div>
+        <div id="bones-bone-list" style="max-height:180px; overflow:auto; background:#0d0d16; border:1px solid #2a2a44; border-radius:6px; padding:4px; font-size:11px;"></div>
+        <div id="bones-bone-schema" style="display:none; background:#0d0d16; border:1px solid #2a2a44; border-radius:6px; padding:6px;">
+          <svg viewBox="0 0 100 200" xmlns="http://www.w3.org/2000/svg" style="width:100%; height:220px;">
+            <g stroke="#556" stroke-width="1.5" fill="none">
+              <line x1="50" y1="14" x2="50" y2="28"/><line x1="50" y1="28" x2="50" y2="45"/><line x1="50" y1="45" x2="50" y2="62"/><line x1="50" y1="62" x2="50" y2="78"/><line x1="50" y1="78" x2="50" y2="92"/>
+              <line x1="50" y1="45" x2="35" y2="40"/><line x1="35" y1="40" x2="22" y2="44"/><line x1="22" y1="44" x2="18" y2="80"/><line x1="18" y1="80" x2="6" y2="105"/>
+              <line x1="50" y1="45" x2="65" y2="40"/><line x1="65" y1="40" x2="78" y2="44"/><line x1="78" y1="44" x2="82" y2="80"/><line x1="82" y1="80" x2="94" y2="105"/>
+              <line x1="50" y1="92" x2="40" y2="100"/><line x1="40" y1="100" x2="30" y2="135"/><line x1="30" y1="135" x2="20" y2="170"/>
+              <line x1="50" y1="92" x2="60" y2="100"/><line x1="60" y1="100" x2="70" y2="135"/><line x1="70" y1="135" x2="80" y2="170"/>
+            </g>
+            <g class="schema-nodes" fill="#4a9aff">
+              <circle class="bone-node" data-bone="Head" cx="50" cy="12" r="7"/>
+              <circle class="bone-node" data-bone="Spine02" cx="50" cy="45" r="3"/><circle class="bone-node" data-bone="Spine01" cx="50" cy="62" r="3"/><circle class="bone-node" data-bone="Waist" cx="50" cy="78" r="3"/><circle class="bone-node" data-bone="Hip" cx="50" cy="92" r="4"/>
+              <circle class="bone-node" data-bone="R_Clavicle" cx="35" cy="40" r="2.5"/><circle class="bone-node" data-bone="R_Upperarm" cx="22" cy="44" r="2.5"/><circle class="bone-node" data-bone="R_Forearm" cx="18" cy="80" r="2.5"/><circle class="bone-node" data-bone="R_Hand" cx="6" cy="105" r="3.5"/>
+              <circle class="bone-node" data-bone="L_Clavicle" cx="65" cy="40" r="2.5"/><circle class="bone-node" data-bone="L_Upperarm" cx="78" cy="44" r="2.5"/><circle class="bone-node" data-bone="L_Forearm" cx="82" cy="80" r="2.5"/><circle class="bone-node" data-bone="L_Hand" cx="94" cy="105" r="3.5"/>
+              <circle class="bone-node" data-bone="R_Thigh" cx="40" cy="100" r="2.5"/><circle class="bone-node" data-bone="R_Calf" cx="30" cy="135" r="2.5"/><circle class="bone-node" data-bone="R_Foot" cx="20" cy="170" r="3"/>
+              <circle class="bone-node" data-bone="L_Thigh" cx="60" cy="100" r="2.5"/><circle class="bone-node" data-bone="L_Calf" cx="70" cy="135" r="2.5"/><circle class="bone-node" data-bone="L_Foot" cx="80" cy="170" r="3"/>
+            </g>
+          </svg>
+          <div style="font-size:10px; color:#888; text-align:center;">Vu de face — gauche écran = côté droit du perso</div>
+        </div>
+        <div id="bones-sel-name" style="font-size:12px; font-weight:600; color:#22d3ee;">Aucun os sélectionné</div>
+
+        <!-- Spécifique POSE : gizmo rotation/décalage + sliders de rotation -->
+        <div id="bones-pose-only" style="display:none; flex-direction:column; gap:8px;">
+          <div style="display:flex; gap:6px;">
+            <button id="bones-gizmo-rot" class="control-btn active" style="flex:1;" title="Gizmo de rotation (poser l'os)">🔄 Rotation</button>
+            <button id="bones-gizmo-tr" class="control-btn" style="flex:1;" title="Décale le joint sans bouger le skin (offset de l'articulation)">↔️ Décalage</button>
+          </div>
+          <div id="bones-rot" style="display:none; flex-direction:column; gap:4px;">
+            <label style="display:flex; align-items:center; gap:6px; font-size:11px;"><span style="width:12px; color:#e66;">X</span><input type="range" id="pose-rot-x" min="-180" max="180" value="0" step="1" style="flex:1;"><span id="pose-rot-x-v" style="width:30px; text-align:right;">0</span></label>
+            <label style="display:flex; align-items:center; gap:6px; font-size:11px;"><span style="width:12px; color:#6e6;">Y</span><input type="range" id="pose-rot-y" min="-180" max="180" value="0" step="1" style="flex:1;"><span id="pose-rot-y-v" style="width:30px; text-align:right;">0</span></label>
+            <label style="display:flex; align-items:center; gap:6px; font-size:11px;"><span style="width:12px; color:#69e;">Z</span><input type="range" id="pose-rot-z" min="-180" max="180" value="0" step="1" style="flex:1;"><span id="pose-rot-z-v" style="width:30px; text-align:right;">0</span></label>
+          </div>
+        </div>
+
+        <!-- Spécifique WEIGHT PAINT : force + lissage -->
+        <div id="bones-weight-only" style="display:none; flex-direction:column; gap:6px;">
+          <div style="font-size:11px; line-height:1.4; color:#9a9ac0;">Os cible = os sélectionné. Peins sur le mesh pour <strong>ajouter</strong> le poids, <strong>Alt/Ctrl</strong> = retirer. Heatmap : bleu 0 → rouge 1.</div>
+          <label style="display:flex; align-items:center; gap:6px; font-size:11px; color:#9a9ac0;"><span style="white-space:nowrap;">Rayon</span><input type="range" id="bones-wp-radius" min="0.004" max="0.5" value="0.06" step="0.004" style="flex:1;"><span id="bones-wp-radius-v" style="width:34px; text-align:right;">6%</span></label>
+          <label style="display:flex; align-items:center; gap:6px; font-size:11px; color:#9a9ac0;"><span style="white-space:nowrap;">Force</span><input type="range" id="bones-wp-strength" min="0" max="0.5" value="0.15" step="0.01" style="flex:1;"><span id="bones-wp-strength-v" style="width:28px; text-align:right;">0.15</span></label>
+          <button id="bones-wp-smooth" class="control-btn" title="Lisse les poids de l'os sélectionné (moyenne des voisins)">🌫️ Lisser les poids</button>
+        </div>
+      </div>
+      <div class="obj-section">
+        <div class="obj-title">Animations</div>
+        <div id="bones-anim-list"></div>
+      </div>
+      <div style="display:flex; gap:6px; align-items:center;">
+        <button id="bones-play" class="control-btn" style="flex:1;" title="Lecture / pause">⏯️ Play</button>
+        <button id="bones-stop" class="control-btn" style="flex:1;" title="Stop + pose de repos">⏹️ Stop</button>
+      </div>
+      <label style="display:flex; align-items:center; gap:6px; font-size:11px; color:#9a9ac0;">
+        <input type="range" id="bones-scrub" min="0" max="1000" value="0" style="flex:1;">
+        <span id="bones-time" style="width:64px; text-align:right; font-variant-numeric:tabular-nums;">0.00 / 0.00</span>
+      </label>
+      <label class="file-input-label control-btn" style="text-align:center;" title="Importer une animation (GLB/FBX) et la retargeter par mapping d'os (calibré pour le rig maison + sources Mixamo/human)">
+        ➕ Importer une animation (mapping)
+        <input type="file" id="bones-retarget-input" class="file-input" accept=".glb,.gltf,.fbx" style="display:none;">
+      </label>
+    </div>
+  </div>
+
   <div id="gizmo-hint" style="display:none; font-size:11.5px; line-height:1.5; color:#9a9ac0;">
     Flèches = déplacer · anneaux = tourner · cubes = échelle.<br>
     <strong>Alt</strong> maintenu : déplacer le pivot seul.
@@ -182,8 +267,8 @@
   <div class="param" data-tools="sculpt mask retexture vertexpaint">
     <label>
       <span class="param-label">Taille</span>
-      <input type="range" id="size-range" min="0.02" max="0.6" value="0.12" step="0.005">
-      <input type="number" id="size-num" min="0.02" max="0.6" value="0.12" step="0.005">
+      <input type="range" id="size-range" min="0.005" max="0.5" value="0.12" step="0.002">
+      <input type="number" id="size-num" min="0.005" max="0.5" value="0.12" step="0.002">
     </label>
   </div>
 
