@@ -626,6 +626,9 @@ function recomposeRetex(withHilite = true) {
 function loadImageFile(file) {
   return new Promise((res, rej) => { const url = URL.createObjectURL(file); const im = new Image(); im.onload = () => { URL.revokeObjectURL(url); res(im); }; im.onerror = rej; im.src = url; });
 }
+function loadImageURL(url) {
+  return new Promise((res, rej) => { const im = new Image(); im.onload = () => res(im); im.onerror = () => rej(new Error('image illisible')); im.src = url; });
+}
 // Menu contextuel des opérations de masque d'un calque (clic droit sur la ligne / la vignette masque).
 let _maskMenuAway = null;
 function closeMaskMenu() {
@@ -873,6 +876,71 @@ document.getElementById('retex-generate').addEventListener('click', async () => 
   } catch (err) { console.error(err); setStatus(`Nano Banana : ${err.message}`); }
   finally { showLoading(false); }
 });
+
+// Texturing COMPLET multi-vues : on tourne autour de l'objet (nViews azimuts, élévation conservée).
+// Vue 1 = génération complète ; vues suivantes = INPAINT des zones encore non couvertes (raccord
+// cohérent avec le déjà-texturé). Accumule dans une seule texture UV -> un calque final.
+async function multiViewTexture(mesh, prompt, key, nViews) {
+  const cam = state.camera, ctrls = state.controls;
+  const savePos = cam.position.clone(), saveTarget = ctrls.target.clone(), saveUp = cam.up.clone();
+  const wasEnabled = ctrls.enabled; ctrls.enabled = false;
+  mesh.updateMatrixWorld(true);
+  if (!mesh.geometry.boundingSphere) mesh.geometry.computeBoundingSphere();
+  const bs = mesh.geometry.boundingSphere;
+  const center = bs.center.clone().applyMatrix4(mesh.matrixWorld);
+  const rel = savePos.clone().sub(center); const relLen = rel.length() || 1;
+  const dist = Math.max(relLen, bs.radius * 2.2);
+  const el = Math.asin(THREE.MathUtils.clamp(rel.y / relLen, -0.999, 0.999)); // élévation conservée
+  const layers = retexLayersOf(mesh);
+  const baseComposite = compositeLayers(mesh.userData._retexBase, layers, RETEX_SIZE); // fond des captures
+  const accum = document.createElement('canvas'); accum.width = accum.height = RETEX_SIZE; const actx = accum.getContext('2d');
+  const disp = document.createElement('canvas'); disp.width = disp.height = RETEX_SIZE; const dctx = disp.getContext('2d');
+  const raf2 = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+  try {
+    for (let i = 0; i < nViews; i++) {
+      showLoading(true, `Multi-view ${i + 1}/${nViews}…`);
+      const az = (i / nViews) * Math.PI * 2, ce = Math.cos(el), se = Math.sin(el);
+      cam.position.set(center.x + dist * Math.cos(az) * ce, center.y + dist * se, center.z + dist * Math.sin(az) * ce);
+      cam.up.set(0, 1, 0); cam.lookAt(center); ctrls.target.copy(center); cam.updateMatrixWorld(true);
+      // Affiche l'état courant (calques existants + accum) pour que la capture le voie (contexte inpaint).
+      dctx.clearRect(0, 0, RETEX_SIZE, RETEX_SIZE); dctx.drawImage(baseComposite, 0, 0); dctx.drawImage(accum, 0, 0);
+      applyTextureCanvas(mesh, disp);
+      await raf2();
+      const capUrl = captureView();
+      const maskUrl = i > 0 ? renderMaskView(mesh, accum, getPendingCam(), 1024, true).toDataURL('image/png') : null;
+      const outUrl = await generateNanoBanana(capUrl, prompt, key, undefined, maskUrl);
+      const [aiImg, capImg] = await Promise.all([loadImageURL(outUrl), loadImageURL(capUrl)]);
+      const w = aiImg.naturalWidth || aiImg.width, h = aiImg.naturalHeight || aiImg.height;
+      const cut = erodeMaskCanvas(capImg, 2, w, h);
+      const cutImg = document.createElement('canvas'); cutImg.width = w; cutImg.height = h;
+      { const c = cutImg.getContext('2d'); c.drawImage(aiImg, 0, 0); c.globalCompositeOperation = 'destination-in'; c.drawImage(cut, 0, 0); c.globalCompositeOperation = 'source-over'; }
+      const viewCanvas = reprojectToUV(cutImg, mesh, RETEX_SIZE);
+      actx.globalCompositeOperation = i === 0 ? 'source-over' : 'destination-over'; // ne remplit que le vide
+      actx.drawImage(viewCanvas, 0, 0);
+      actx.globalCompositeOperation = 'source-over';
+    }
+    layers.push({ name: 'IA 360°: ' + prompt.slice(0, 12), canvas: accum, thumb: accum, opacity: 1, visible: true });
+    _retexSelLayer = null; _retexMaskMode = 'layer';
+    recomposeRetex(); renderRetexLayers();
+    setStatus(`Texturing multi-vues terminé (${nViews} vues).`);
+  } catch (err) { console.error(err); setStatus(`Multi-view : ${err.message}`); }
+  finally {
+    cam.position.copy(savePos); cam.up.copy(saveUp); ctrls.target.copy(saveTarget); cam.lookAt(saveTarget); cam.updateMatrixWorld(true);
+    if (ctrls.update) ctrls.update();
+    ctrls.enabled = wasEnabled; showLoading(false);
+  }
+}
+function runMultiView(nViews) {
+  const mesh = state.targetMesh; if (!mesh) { setStatus('Aucun objet.'); return; }
+  const key = document.getElementById('retex-apikey').value.trim();
+  if (!key) { setStatus('Renseigne ta clé API Gemini.'); return; }
+  const prompt = document.getElementById('retex-prompt').value.trim();
+  if (!prompt) { setStatus('Écris un prompt.'); return; }
+  localStorage.setItem('geminiApiKey', key);
+  multiViewTexture(mesh, prompt, key, nViews);
+}
+document.getElementById('retex-mv6').addEventListener('click', () => runMultiView(6));
+document.getElementById('retex-mv12').addEventListener('click', () => runMultiView(12));
 
 document.getElementById('retex-pregen').addEventListener('click', () => {
   if (_retexMaskMode === 'pregen') { _retexMaskMode = 'layer'; setStatus('Mode masque de calque.'); }

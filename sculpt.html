@@ -121,6 +121,10 @@
       <textarea id="retex-prompt" rows="2" placeholder="Prompt : ce que l'IA doit faire à la texture (ex : « transforme en marbre veiné blanc »)"
         style="width:100%; box-sizing:border-box; resize:vertical; background:#0d0d16; color:#e6e6f0; border:1px solid #2a2a44; border-radius:6px; padding:6px; font:13px/1.4 system-ui,sans-serif;"></textarea>
       <button id="retex-generate" class="control-btn" title="Génère l'édition via Nano Banana et la reprojette sur l'objet">🍌 Générer (Nano Banana)</button>
+      <div style="display:flex; gap:6px;">
+        <button id="retex-mv6" class="control-btn" style="flex:1;" title="Texture tout l'objet en tournant autour (6 vues) : chaque vue complète les zones non couvertes (inpaint) pour un raccord cohérent">🌐 360° · 6 vues</button>
+        <button id="retex-mv12" class="control-btn" style="flex:1;" title="Idem en 12 vues (couverture plus complète, 2× plus lent/coûteux)">🌐 12 vues</button>
+      </div>
       <input type="password" id="retex-apikey" placeholder="Clé API Gemini"
         style="width:100%; box-sizing:border-box; background:#0d0d16; color:#e6e6f0; border:1px solid #2a2a44; border-radius:6px; padding:6px; font:12px/1.4 system-ui,sans-serif;">
       <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener noreferrer"
