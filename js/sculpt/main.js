@@ -25,7 +25,7 @@ import { checkThickness } from './wallcheck.js';
 import { autoOrient } from './orient.js';
 import { decimateMesh } from './decimate.js';
 import { applyDisplayMode } from './display.js';
-import { saveScene, loadScene, clearScene } from './autosave.js';
+import { saveScene, loadScene, clearScene, restoreRig } from './autosave.js';
 import { captureView, reprojectToUV, compositeLayers, applyTextureCanvas, hasPendingCam, getPendingCam, captureSquareSidePx, paintMaskDab, readMaskCanvas, disposeLayerMask, setLayerMask, invertLayerMask, renderMaskView, renderReliefMaskView, generateNanoBanana } from './retexture.js';
 import { splitByMask } from './split-mask.js';
 import { pushGeom, pushAction, pushMask, pushColor, undo, redo, setHistoryListener } from './history.js';
@@ -76,6 +76,13 @@ function setBrushSize(v) {
   const r = document.getElementById('size-range'), num = document.getElementById('size-num');
   v = Math.max(parseFloat(r.min), Math.min(parseFloat(r.max), v));
   state.params.sizeFrac = v; r.value = v; num.value = v.toFixed(3);
+  syncWpRadiusUI(); // le slider du panneau weight paint suit la même valeur
+}
+// Reflète sizeFrac sur le slider « Rayon » du panneau weight paint (même zone d'influence que le sculpt).
+function syncWpRadiusUI() {
+  const wr = document.getElementById('bones-wp-radius'); if (!wr) return;
+  wr.value = state.params.sizeFrac;
+  const wv = document.getElementById('bones-wp-radius-v'); if (wv) wv.textContent = Math.round(state.params.sizeFrac * 100) + '%';
 }
 
 // Rayon MONDE d'un pinceau à `worldPoint` pour une fraction d'écran `frac` : frac · distance · tan(fov/2)
@@ -418,6 +425,7 @@ async function restoreAutosave() {
   _restoring = true;
   try {
     for (const o of data.objects) {
+      if (o.kind === 'rig') { await restoreRig(o.data); continue; } // rig complet : squelette + skin + anims reconstruits
       const mesh = createObject(o.geometry, o.material, o.name, false); // géométrie déjà ordonnée
       mesh.position.fromArray(o.pos); mesh.quaternion.fromArray(o.quat); mesh.scale.fromArray(o.scale); mesh.updateMatrixWorld(true);
       mesh.visible = o.visible;
@@ -499,14 +507,14 @@ function processMove() {
     // retexture : on montre le cercle d'influence (comme les brosses) pour voir la zone peinte du masque
     if (state.params.tool === 'split' || state.params.tool === 'gizmo' || state.params.tool === 'other') { hideBrushCursor(); return; }
     if (state.params.tool === 'bones') {
-      // weight paint : cercle orienté normale + rayon lié au zoom, MASQUÉ au survol d'un os (on sélectionnerait).
-      if (isWeightPaintActive() && !markerUnderMouse(true)) { const h = wpPickPoint(state.mouse); if (h) updateBrushCursor(h, true, true, wpWorldRadius(h.point), h.face ? h.face.normal : null); else hideBrushCursor(); }
+      // weight paint : même cercle d'influence que le sculpt, MASQUÉ au survol d'un os (on sélectionnerait).
+      if (isWeightPaintActive() && !markerUnderMouse(true)) showInfluenceCursor(wpPickPoint(state.mouse));
       else hideBrushCursor();
       return;
     }
     if (state.params.tool === 'vertexpaint' && _vpKeyPick) { const h = raycastSurface(); if (h) vpPickSelect(h); hideBrushCursor(); return; } // « i » : pipette continue
     if (state.params.tool === 'vertexpaint' && _vpPipette) { hideBrushCursor(); return; } // pipette panel : pas de cercle
-    { const h = raycastSurface(); if (h) syncBrushRadius(h.point); updateBrushCursor(h); } // cercle : rayon = fraction d'écran au point survolé
+    showInfluenceCursor(raycastSurface()); // cercle : rayon = fraction d'écran au point survolé
     return;
   }
   const st = performance.now();
@@ -524,7 +532,7 @@ dom.addEventListener('pointermove', (e) => {
   lastClientX = e.clientX;
   if (radiusMode) { // X maintenu : la souris règle le rayon du brush
     setBrushSize(radiusStartSize + (e.clientX - radiusStartX) * RADIUS_PER_PX);
-    if (radiusAnchor) { syncBrushRadius(radiusAnchor.point); updateBrushCursor(radiusAnchor, false); }
+    if (radiusAnchor) showInfluenceCursor(radiusAnchor);
     return;
   }
   if (lassoing) { addLassoPoint(e); return; }
@@ -1690,7 +1698,12 @@ toolButtons.forEach((btn) => {
       // Bake la pose DÈS la sortie du menu squelette (pas au 1er clic) -> géométrie + BVH prêts pour le hover.
       if (isRig(state.targetMesh) && isPoseDirty(state.targetMesh)) { bakePose(state.targetMesh); setActiveObject(state.targetMesh); }
     }
-    if (isBones) renderBonesPanel();
+    if (isBones) {
+      renderBonesPanel();
+      // Pose active par défaut dès l'entrée dans Bones (pas d'état « Bones sans rien »).
+      const bt = bonesTarget();
+      if (bt && !isPoseActive() && !isWeightPaintActive()) { enterPose(bt, onPoseSelect); syncBonesModeUI(); }
+    }
     if (!isVP) dom.style.cursor = ''; // curseur pipette éventuel réinitialisé hors Vertex Paint
     if (isVP && state.targetMesh) {
       const mVP = state.targetMesh;
@@ -1944,13 +1957,17 @@ function onPoseSelect(index) { highlightBone(index); syncPoseRotUI(index); }
 // Sélection en mode WEIGHT PAINT : surlignage + définit l'os cible + rafraîchit la heatmap.
 function onWeightSelect(index) { highlightBone(index); setPaintBone(index >= 0 ? poseBones()[index] : null); }
 
-// Rayon du pinceau weight paint : lié au ZOOM (fraction d'écran constante). frac = valeur du slider ;
-// rayon monde = frac · distance(caméra, point) · tan(fov/2) -> même taille à l'écran quel que soit le zoom.
-function wpWorldRadius(worldPoint) {
-  const el = document.getElementById('bones-wp-radius');
-  const frac = el ? parseFloat(el.value) : 0.06;
-  const d = state.camera.position.distanceTo(worldPoint);
-  return Math.max(1e-4, frac * d * Math.tan(THREE.MathUtils.degToRad(state.camera.fov) / 2));
+// Rayon du pinceau weight paint : MÊME zone d'influence que le sculpt (fraction d'écran state.params.sizeFrac,
+// donc réglable au slider Taille ET à la touche X, et constante à l'écran quel que soit le zoom).
+function wpWorldRadius(worldPoint) { return screenWorldRadius(worldPoint, state.params.sizeFrac); }
+
+// Affiche le cercle d'influence au point `hit` en calant le rayon monde sur sizeFrac. En weight paint,
+// on oriente le cercle sur la normale de la face touchée (comme les brosses de sculpt).
+function showInfluenceCursor(hit) {
+  if (!hit) { hideBrushCursor(); return; }
+  syncBrushRadius(hit.point);
+  if (isWeightPaintActive()) updateBrushCursor(hit, true, true, state.params.size, hit.face ? hit.face.normal : null);
+  else updateBrushCursor(hit);
 }
 
 // Affiche/masque les blocs UI selon le mode bones actif (pose vs weight paint) + rebuild liste.
@@ -1960,6 +1977,7 @@ function syncBonesModeUI() {
   if (g('bones-sel-ui')) g('bones-sel-ui').style.display = sel ? 'flex' : 'none';
   if (g('bones-pose-only')) g('bones-pose-only').style.display = pose ? 'flex' : 'none';
   if (g('bones-weight-only')) g('bones-weight-only').style.display = weight ? 'flex' : 'none';
+  if (weight) syncWpRadiusUI(); // le slider Rayon reflète sizeFrac (partagé avec le sculpt)
   if (g('bones-pose')) g('bones-pose').classList.toggle('active', pose);
   if (g('bones-weight')) g('bones-weight').classList.toggle('active', weight);
   if (sel) { renderPoseList(); highlightBone(selectedIndex()); if (pose) syncPoseRotUI(selectedIndex()); }
@@ -1987,18 +2005,23 @@ function syncBonesModeUI() {
     scrub.addEventListener('pointerup', end); scrub.addEventListener('change', end);
   }
   const poseBtn = document.getElementById('bones-pose'), weightBtn = document.getElementById('bones-weight');
+  // Pose et Weight sont les DEUX seuls modes de Bones (pas d'état « rien »). Cliquer Pose (re)active la
+  // pose ; ne la désactive jamais tant qu'on reste dans Bones (on sort de la pose seulement en quittant
+  // Bones ou en passant en Weight).
   if (poseBtn) poseBtn.addEventListener('click', () => {
     const o = bonesTarget(); if (!o) return;
+    if (isPoseActive() && !isWeightPaintActive()) return; // déjà en pose
     const sel = selectedIndex(); // conserve l'os sélectionné au changement de mode
-    if (isPoseActive() && !isWeightPaintActive()) { exitPose(); setStatus('Pose désactivée.'); }
-    else { exitWeightPaint(); enterPose(o, onPoseSelect); if (sel >= 0) selectByIndex(sel); setStatus('Pose : clique un os (3D, liste ou schéma) puis tourne/décale. Reclic = os empilé suivant.'); }
+    exitWeightPaint(); enterPose(o, onPoseSelect); if (sel >= 0) selectByIndex(sel);
+    setStatus('Pose : clique un os (3D, liste ou schéma) puis tourne/décale. Reclic = os empilé suivant.');
     syncBonesModeUI();
   });
   if (weightBtn) weightBtn.addEventListener('click', () => {
     const o = bonesTarget(); if (!o) return;
+    if (isWeightPaintActive()) return; // déjà en weight paint
     const sel = selectedIndex();
-    if (isWeightPaintActive()) { exitWeightPaint(); exitPose(); setStatus('Weight paint désactivé.'); }
-    else { exitPose(); enterPose(o, onWeightSelect, { noGizmo: true }); enterWeightPaint(o); if (sel >= 0) selectByIndex(sel); setStatus('Weight paint : clique un os cible, peins sur le mesh (Alt = retirer). La pose est conservée.'); }
+    exitPose(); enterPose(o, onWeightSelect, { noGizmo: true }); enterWeightPaint(o); if (sel >= 0) selectByIndex(sel);
+    setStatus('Weight paint : clique un os cible, peins sur le mesh (Alt = retirer). La pose est conservée.');
     syncBonesModeUI();
   });
   const poseReset = document.getElementById('bones-pose-reset');
@@ -2033,7 +2056,7 @@ function syncBonesModeUI() {
   dom.addEventListener('pointerdown', (e) => {
     if (state.params.tool !== 'bones' || !isPoseActive() || isWeightPaintActive() || e.button !== 0) return;
     setMouseFromEvent(e);
-    if (pickBoneAtMouse()) state.controls.enabled = false;
+    if (pickBoneAtMouse(true)) state.controls.enabled = false; // twists cliquables, mais 1er clic = os normal (cyclage ensuite)
   }, true);
   dom.addEventListener('pointerup', () => { if (state.params.tool === 'bones' && isPoseActive() && !isWeightPaintActive()) state.controls.enabled = true; });
 
@@ -2066,7 +2089,7 @@ function syncBonesModeUI() {
   };
   dom.addEventListener('pointerup', wpEnd); dom.addEventListener('pointercancel', wpEnd);
   const wpRad = document.getElementById('bones-wp-radius');
-  if (wpRad) wpRad.addEventListener('input', () => { document.getElementById('bones-wp-radius-v').textContent = Math.round(parseFloat(wpRad.value) * 100) + '%'; });
+  if (wpRad) wpRad.addEventListener('input', () => setBrushSize(parseFloat(wpRad.value))); // pilote la MÊME zone d'influence (sizeFrac)
   const wpStr = document.getElementById('bones-wp-strength');
   if (wpStr) wpStr.addEventListener('input', () => { document.getElementById('bones-wp-strength-v').textContent = wpStr.value; });
   const wpSmoothBtn = document.getElementById('bones-wp-smooth');
@@ -2332,12 +2355,13 @@ function enterRadiusMode() {
   if (radiusMode || !state.targetMesh) return;
   const t = state.params.tool;
   if (t === 'split' || t === 'gizmo' || t === 'move' || t === 'other') return; // sans objet de brush
+  if (t === 'bones' && !isWeightPaintActive()) return; // en pose : pas de pinceau
   radiusMode = true;
   radiusStartX = lastClientX;
   radiusStartSize = state.params.sizeFrac; // on règle la FRACTION d'écran
-  radiusAnchor = raycastSurface(); // point figé sous le curseur
+  radiusAnchor = isWeightPaintActive() ? wpPickPoint(state.mouse) : raycastSurface(); // point figé sous le curseur (proxy posé en weight paint)
   state.controls.enabled = false;
-  if (radiusAnchor) { state.brushMesh.visible = true; syncBrushRadius(radiusAnchor.point); updateBrushCursor(radiusAnchor, false); }
+  if (radiusAnchor) { state.brushMesh.visible = true; showInfluenceCursor(radiusAnchor); }
   setStatus(`Taille : ${state.params.sizeFrac.toFixed(3)} — bouge la souris, relâche X`);
 }
 function exitRadiusMode() {

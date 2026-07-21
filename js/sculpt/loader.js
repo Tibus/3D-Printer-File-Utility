@@ -78,18 +78,7 @@ export async function loadModelFromFile(file) {
       if (ext === 'glb' || ext === 'gltf' || ext === 'fbx') {
         const rig = extractRig(root);
         if (rig) {
-          const obj = addRiggedObject(root, file.name.replace(/\.[^.]+$/, ''), loadedAnimations, (sm) => {
-            if (!sm.geometry.attributes.normal) sm.geometry.computeVertexNormals(); // brosse/curseur exigent des normales
-            reorderSpatially(sm.geometry);                                  // localité mémoire -> upload GPU partiel (sinon lag). skinIndex/skinWeight permutés avec.
-            if (!sm.geometry.boundsTree) sm.geometry.computeBoundsTree({ setBoundingBox: false });
-            sm.userData.baseMat = sm.material;                              // matériau réel (skinné) ; l'affichage en dérive
-            sm.material = displayMaterial(sm.material, state.params.displayMode || 'texture');
-            // Wireframe : SkinnedMesh lié au MÊME squelette pour qu'il suive la pose/animation.
-            const wire = new THREE.SkinnedMesh(sm.geometry, new THREE.MeshBasicMaterial({ color: 0x000000, wireframe: true, transparent: true, opacity: 0.15 }));
-            wire.name = 'wireframe'; wire.frustumCulled = false; wire.visible = state.params.displayHelper;
-            wire.bind(sm.skeleton, sm.bindMatrix);
-            sm.add(wire);
-          });
+          const obj = addRiggedObject(root, file.name.replace(/\.[^.]+$/, ''), loadedAnimations, (sm) => buildRigMesh(sm, true));
           setActiveObject(obj);
           frameAll();
           _onObjectsChanged();
@@ -535,6 +524,53 @@ function installMesh(geometry, material) {
   setActiveObject(mesh);
   frameAll();
   _onObjectsChanged();
+}
+
+// Prépare une SkinnedMesh d'un rig pour le sculpt : normales, réordonnancement spatial (upload GPU
+// partiel — permute aussi skinIndex/skinWeight), BVH, matériau d'affichage dérivé du matériau réel, et
+// wireframe skinné lié au même squelette. `reorder=false` à la restauration autosave (géométrie déjà
+// ordonnée quand elle a été sauvée). Exporté pour être réutilisé par la restauration (autosave.js).
+// Uniformise skinIndex/skinWeight entre sommets de MÊME position (mêmes groupes que la soudure logique du
+// sculpt, Q=1e4). Beaucoup de GLB ont des sommets coïncidents non soudés avec des poids DIFFÉRENTS -> ils
+// se séparent sous déformation (trous aux coutures quand on bouge un os). On ne touche PAS la topologie
+// (coutures UV préservées) : on force juste chaque groupe à partager les mêmes poids -> déformation solidaire.
+function unifySkinWeights(geometry) {
+  const si = geometry.attributes.skinIndex, sw = geometry.attributes.skinWeight;
+  if (!si || !sw) return 0;
+  const pos = geometry.attributes.position, count = pos.count, Q = 1e4;
+  const map = new Map(), groups = new Map();
+  for (let i = 0; i < count; i++) {
+    const key = `${Math.round(pos.getX(i) * Q)},${Math.round(pos.getY(i) * Q)},${Math.round(pos.getZ(i) * Q)}`;
+    let r = map.get(key); if (r === undefined) { map.set(key, i); r = i; }
+    let arr = groups.get(r); if (!arr) { arr = []; groups.set(r, arr); } arr.push(i);
+  }
+  let fixed = 0;
+  for (const members of groups.values()) {
+    if (members.length < 2) continue;
+    const acc = new Map(); // os -> poids cumulé sur le groupe
+    for (const v of members) for (let k = 0; k < 4; k++) { const w = sw.getComponent(v, k); if (w > 0) { const b = si.getComponent(v, k); acc.set(b, (acc.get(b) || 0) + w); } }
+    const top = [...acc.entries()].sort((a, b) => b[1] - a[1]).slice(0, 4); // 4 influences dominantes
+    let sum = 0; for (const e of top) sum += e[1]; if (sum <= 0) continue;
+    const bi = [0, 0, 0, 0], bw = [0, 0, 0, 0];
+    for (let k = 0; k < top.length; k++) { bi[k] = top[k][0]; bw[k] = top[k][1] / sum; } // renormalisé à 1
+    for (const v of members) for (let k = 0; k < 4; k++) { si.setComponent(v, k, bi[k]); sw.setComponent(v, k, bw[k]); }
+    fixed++;
+  }
+  si.needsUpdate = true; sw.needsUpdate = true;
+  return fixed;
+}
+
+export function buildRigMesh(sm, reorder = true) {
+  if (!sm.geometry.attributes.normal) sm.geometry.computeVertexNormals(); // brosse/curseur exigent des normales
+  if (reorder) unifySkinWeights(sm.geometry); // chargement d'un GLB : soude le skin des coutures (pas à la restauration autosave, déjà soudé)
+  if (reorder) reorderSpatially(sm.geometry);
+  if (!sm.geometry.boundsTree) sm.geometry.computeBoundsTree({ setBoundingBox: false });
+  sm.userData.baseMat = sm.material;                                  // matériau réel (skinné) ; l'affichage en dérive
+  sm.material = displayMaterial(sm.material, state.params.displayMode || 'texture');
+  const wire = new THREE.SkinnedMesh(sm.geometry, new THREE.MeshBasicMaterial({ color: 0x000000, wireframe: true, transparent: true, opacity: 0.15 }));
+  wire.name = 'wireframe'; wire.frustumCulled = false; wire.visible = state.params.displayHelper;
+  wire.bind(sm.skeleton, sm.bindMatrix);
+  sm.add(wire);
 }
 
 // Convertit un rig POSÉ en mesh(es) statique(s) : on baake les positions MONDE skinnées (via

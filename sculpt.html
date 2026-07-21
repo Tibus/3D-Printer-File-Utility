@@ -230,7 +230,7 @@
         <!-- Spécifique WEIGHT PAINT : force + lissage -->
         <div id="bones-weight-only" style="display:none; flex-direction:column; gap:6px;">
           <div style="font-size:11px; line-height:1.4; color:#9a9ac0;">Os cible = os sélectionné. Peins sur le mesh pour <strong>ajouter</strong> le poids, <strong>Alt/Ctrl</strong> = retirer. Heatmap : bleu 0 → rouge 1.</div>
-          <label style="display:flex; align-items:center; gap:6px; font-size:11px; color:#9a9ac0;"><span style="white-space:nowrap;">Rayon</span><input type="range" id="bones-wp-radius" min="0.004" max="0.5" value="0.06" step="0.004" style="flex:1;"><span id="bones-wp-radius-v" style="width:34px; text-align:right;">6%</span></label>
+          <label style="display:flex; align-items:center; gap:6px; font-size:11px; color:#9a9ac0;"><span style="white-space:nowrap;" title="Même zone d'influence que le sculpt — réglable aussi à la touche X">Rayon</span><input type="range" id="bones-wp-radius" min="0.005" max="0.5" value="0.12" step="0.002" style="flex:1;"><span id="bones-wp-radius-v" style="width:34px; text-align:right;">12%</span></label>
           <label style="display:flex; align-items:center; gap:6px; font-size:11px; color:#9a9ac0;"><span style="white-space:nowrap;">Force</span><input type="range" id="bones-wp-strength" min="0" max="0.5" value="0.15" step="0.01" style="flex:1;"><span id="bones-wp-strength-v" style="width:28px; text-align:right;">0.15</span></label>
           <button id="bones-wp-smooth" class="control-btn" title="Lisse les poids de l'os sélectionné (moyenne des voisins)">🌫️ Lisser les poids</button>
         </div>

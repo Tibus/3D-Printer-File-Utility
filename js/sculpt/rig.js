@@ -48,9 +48,9 @@ function fitToView(root) {
 // est enregistré comme objet SCULPTABLE dans state.objects (il a une géométrie -> BVH/topologie/retexture
 // fonctionnent normalement). Un objet `rig` partagé (root, skeleton, bones, mixer, helper, animations) est
 // posé sur chaque SkinnedMesh.userData.rig. `animations` = clips embarqués. Renvoie le SkinnedMesh principal.
-export function addRiggedObject(root, name, animations, buildObject) {
+export function addRiggedObject(root, name, animations, buildObject, opts = {}) {
   root.name = name || root.name || `Rig ${++state.objectSeq}`;
-  fitToView(root);
+  if (opts.fit !== false) fitToView(root); // restauration autosave : transform déjà sauvegardé -> ne PAS re-normaliser
   const info = extractRig(root) || { skinned: [], bones: [], skeleton: null };
   const mixer = new THREE.AnimationMixer(root);
   const helper = new THREE.SkeletonHelper(root);

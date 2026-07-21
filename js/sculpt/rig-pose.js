@@ -90,7 +90,7 @@ export function enterPose(obj, onSelect, opts) {
     m.renderOrder = 999; m.frustumCulled = false;
     m.userData.boneIndex = i; m.userData.twist = twist;
     _group.add(m); _markers.push(m);
-    if (!twist) _pickables.push(m); // seuls les non-Twist sont cliquables (comme l'éditeur)
+    if (!twist) _pickables.push(m); // liste des non-Twist (utilisée pour privilégier un os normal au 1er clic)
   });
   state.scene.add(_group);
   updatePoseMarkers();
@@ -153,7 +153,7 @@ export function markerUnderMouse(includeTwist) {
 
 export function selectByIndex(index) {
   const bone = _bones[index];
-  if (!bone) return; // NB : les Twist sont sélectionnables ICI (via la liste) mais pas au clic souris (voir _pickables)
+  if (!bone) return; // les Twist sont sélectionnables (liste + clic souris via cyclage) ; le 1er clic d'une pile reste un os normal
   _selectedIndex = index;
   for (const m of _markers) m.material.color.setHex(m.userData.boneIndex === index ? 0xffff00 : (m.userData.twist ? 0x666666 : 0x4a9aff));
   if (_noGizmo) { if (_tc) { _tc.detach(); _tc.enabled = false; _tc.visible = false; } }
