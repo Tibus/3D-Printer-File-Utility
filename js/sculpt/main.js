@@ -536,6 +536,14 @@ dom.addEventListener('pointermove', (e) => {
   }
 });
 
+// La caméra bouge (zoom/orbite) sans mouvement souris -> rafraîchir le cercle d'influence : sa taille
+// est screen-constante (dépend de la distance caméra) et le point sous le curseur change au zoom.
+state.controls.addEventListener('change', () => {
+  if (sculpting || radiusMode || lassoing) return; // stroke/réglage en cours : géré ailleurs
+  pendingMods = pendingMods || {}; // le rendu du curseur (branche hover) n'utilise pas les modificateurs
+  if (!moveScheduled) { moveScheduled = true; requestAnimationFrame(processMove); }
+});
+
 function endStroke(e) {
   if (!sculpting) return;
   sculpting = false;
