@@ -552,6 +552,15 @@ export const NANO_HEIGHT = [
   'PIXEL-PERFECT ALIGNMENT (mandatory): the object silhouette, position, scale and rotation MUST match the input EXACTLY — the map is reprojected onto the 3D model, so any shift, tilt, zoom, crop or reframe breaks it. Keep the exact same framing. The relief detail must land on the same pixels as the surface it belongs to.',
   'Output a single grayscale image, same resolution and framing as the input, no color, no outlines, no vignette, no border. Outside the object silhouette, output neutral mid-gray.',
 ].join(' ');
+// Prompt SYSTÈME pour DÉRIVER une height map À PARTIR d'une image déjà texturée (2ᵉ appel du flux
+// « Texture + Relief » chaîné) : on donne le rendu couleur et on demande le relief géométrique IMPLIQUÉ
+// par ce qui y est dessiné (sillon d'une cicatrice, rides, reliefs saillants…), aligné au pixel.
+export const NANO_HEIGHT_DERIVE = [
+  'You are given an image of a TEXTURED 3D surface (flat, unlit). Output the GRAYSCALE HEIGHT / DISPLACEMENT MAP of the GEOMETRIC RELIEF implied by the features drawn on it — e.g. a scar/cut becomes a recessed groove, wrinkles become creases, studs/scales become raised bumps. Infer relief from the depicted detail, NOT from the base color of the material.',
+  'ENCODING (mandatory): mid-gray 50% (rgb 128,128,128) = flat / no displacement. Darker than mid-gray = recessed (grooves, cuts, pores), brighter = raised (welts, studs, scales). Center everything on mid-gray. Do NOT bake the material\'s flat color, global lighting, ambient occlusion, cast shadows or a large-scale gradient into the map — only the LOCAL relief of the depicted features, as small variations around mid-gray. A smooth painted area with no geometric detail must stay flat mid-gray even if it is dark.',
+  'PIXEL-PERFECT ALIGNMENT (mandatory): the relief MUST land on the exact same pixels as the feature it belongs to in the input; keep the object silhouette, position, scale, rotation and framing identical (the map is reprojected onto the 3D model). Outside the object silhouette, output neutral mid-gray.',
+  'Output a single grayscale image, same resolution and framing as the input, no color, no outlines, no vignette, no border.',
+].join(' ');
 export async function generateNanoBanana(imageDataURL, prompt, apiKey, model = NANO_MODEL, maskDataURL = null, system = NANO_SYSTEM) {
   const b64 = imageDataURL.split(',')[1];
   const mime = (imageDataURL.match(/^data:([^;]+);/) || [, 'image/png'])[1];

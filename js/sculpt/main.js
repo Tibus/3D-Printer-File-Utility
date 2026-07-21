@@ -25,7 +25,7 @@ import { autoOrient } from './orient.js';
 import { decimateMesh } from './decimate.js';
 import { applyDisplayMode } from './display.js';
 import { saveScene, loadScene, clearScene } from './autosave.js';
-import { captureView, reprojectToUV, compositeLayers, applyTextureCanvas, hasPendingCam, getPendingCam, captureSquareSidePx, paintMaskDab, readMaskCanvas, disposeLayerMask, setLayerMask, invertLayerMask, renderMaskView, generateNanoBanana, NANO_HEIGHT } from './retexture.js';
+import { captureView, reprojectToUV, compositeLayers, applyTextureCanvas, hasPendingCam, getPendingCam, captureSquareSidePx, paintMaskDab, readMaskCanvas, disposeLayerMask, setLayerMask, invertLayerMask, renderMaskView, generateNanoBanana, NANO_HEIGHT, NANO_HEIGHT_DERIVE } from './retexture.js';
 import { splitByMask } from './split-mask.js';
 import { pushGeom, pushAction, pushMask, undo, redo, setHistoryListener } from './history.js';
 import { initGizmo, activateGizmo, deactivateGizmo, setAltPivot, isGizmoActive } from './gizmo.js';
@@ -1180,6 +1180,68 @@ document.getElementById('retex-relief').addEventListener('click', async () => {
     recomposeRetex(); renderRetexLayers();
     setStatus(layer ? `Calque relief ajouté (${layer.moved.length.toLocaleString('fr-FR')} vertices). Règle l’amplitude dans la liste.` : 'Relief nul (height map plate ou zone non couverte).');
   } catch (err) { console.error(err); setStatus(`Relief IA : ${err.message}`); }
+  finally { showLoading(false); }
+});
+
+// Texture + Relief (2 appels IA CHAÎNÉS) : 1) couleur (NANO_SYSTEM), 2) height map DÉRIVÉE du rendu
+// couleur (NANO_HEIGHT_DERIVE, entrée = image couleur) -> le relief se creuse exactement où la couleur
+// est peinte. Même caméra mémorisée -> les 2 reprojections sont alignées. Produit 2 calques.
+document.getElementById('retex-texrelief').addEventListener('click', async () => {
+  const mesh = state.targetMesh; if (!mesh) { setStatus('Aucun objet.'); return; }
+  if (!mesh.geometry.attributes.uv) { setStatus('Le maillage n’a pas d’UV (retexture requise).'); return; }
+  const key = document.getElementById('retex-apikey').value.trim();
+  if (!key) { setStatus('Renseigne ta clé API Gemini.'); return; }
+  const prompt = document.getElementById('retex-prompt').value.trim();
+  if (!prompt) { setStatus('Écris un prompt (ex. « cicatrice sur la joue »).'); return; }
+  localStorage.setItem('geminiApiKey', key);
+  if (isGizmoActive()) deactivateGizmo();
+  showLoading(true, 'Texture + Relief · 1/2 couleur…');
+  await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+  try {
+    recomposeRetex(false);
+    const capUrl = captureView();          // capture flat de l'état courant + mémorise la caméra
+    const cam = getPendingCam();
+    let maskUrl = null;
+    if (_retexPendingMask && _retexPendingMask.mask) maskUrl = renderMaskView(mesh, _retexPendingMask.mask, cam, 1024).toDataURL('image/png');
+    const dbg = document.getElementById('retex-debug').checked;
+    const dl = (href, name) => { const a = document.createElement('a'); a.href = href; a.download = name; a.click(); };
+    const layers = retexLayersOf(mesh);
+
+    // --- Appel 1 : COULEUR (inpaint si zone peinte) -> calque texture ---
+    const colorUrl = await generateNanoBanana(capUrl, prompt, key, undefined, maskUrl);
+    const [colorImg, capImg] = await Promise.all([loadImageURL(colorUrl), loadImageURL(capUrl)]);
+    const w = colorImg.naturalWidth || colorImg.width, h = colorImg.naturalHeight || colorImg.height;
+    if (dbg) { dl(capUrl, 'tr-1-capture.png'); if (maskUrl) dl(maskUrl, 'tr-1b-mask.png'); dl(colorUrl, 'tr-2-couleur.png'); }
+    const cut = erodeMaskCanvas(capImg, 2, w, h);
+    const colorDet = document.createElement('canvas'); colorDet.width = w; colorDet.height = h;
+    { const c = colorDet.getContext('2d'); c.drawImage(colorImg, 0, 0); c.globalCompositeOperation = 'destination-in'; c.drawImage(cut, 0, 0); c.globalCompositeOperation = 'source-over'; }
+    const colorCanvas = reprojectToUV(colorDet, mesh, RETEX_SIZE, cam);
+    const colorLayer = { name: 'IA: ' + prompt.slice(0, 14), canvas: colorCanvas, thumb: colorDet, cam, opacity: 1, visible: true };
+    if (_retexPendingMask && _retexPendingMask.mask) { colorLayer.mask = _retexPendingMask.mask; colorLayer._maskRT = _retexPendingMask._maskRT; }
+    layers.push(colorLayer);
+    recomposeRetex(); renderRetexLayers();  // affiche la couleur pendant le 2ᵉ appel
+
+    // --- Appel 2 : RELIEF dérivé de l'image couleur -> calque relief ---
+    showLoading(true, 'Texture + Relief · 2/2 relief…');
+    const heightUrl = await generateNanoBanana(colorUrl, prompt, key, undefined, null, NANO_HEIGHT_DERIVE);
+    const heightImg = await loadImageURL(heightUrl);
+    const hw = heightImg.naturalWidth || heightImg.width, hh = heightImg.naturalHeight || heightImg.height;
+    if (dbg) dl(heightUrl, 'tr-3-height-brut.png');
+    const hp = highPassGray(heightImg, hw, hh);
+    const cut2 = erodeMaskCanvas(capImg, 2, hw, hh);
+    { const c = hp.getContext('2d'); c.globalCompositeOperation = 'destination-in'; c.drawImage(cut2, 0, 0); c.globalCompositeOperation = 'source-over'; }
+    if (dbg) dl(hp.toDataURL('image/png'), 'tr-4-height-highpass.png');
+    const heightCanvas = reprojectToUV(hp, mesh, RETEX_SIZE, cam, 4);
+    if (dbg) dl(heightCanvas.toDataURL('image/png'), 'tr-5-height-uv.png');
+    // Confinement du relief : zone d'inpaint si peinte, sinon le masque du calque couleur (même région).
+    const maskCanvas = (_retexPendingMask && _retexPendingMask.mask) ? _retexPendingMask.mask : (colorLayer.mask || null);
+    const thumb = document.createElement('canvas'); thumb.width = thumb.height = 96; thumb.getContext('2d').drawImage(hp, 0, 0, 96, 96);
+    const reliefLayer = buildReliefLayer(mesh, heightCanvas, maskCanvas, '⛰️ ' + prompt.slice(0, 12), thumb);
+    if (reliefLayer) layers.push(reliefLayer);
+    if (_retexPendingMask) { _retexPendingMask = null; _retexMaskMode = 'layer'; }
+    recomposeRetex(); renderRetexLayers();
+    setStatus(reliefLayer ? `Texture + relief ajoutés (relief : ${reliefLayer.moved.length.toLocaleString('fr-FR')} vertices).` : 'Texture ajoutée ; relief nul (rien de saillant détecté).');
+  } catch (err) { console.error(err); setStatus(`Texture + Relief : ${err.message}`); }
   finally { showLoading(false); }
 });
 

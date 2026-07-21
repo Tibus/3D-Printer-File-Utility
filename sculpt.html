@@ -129,6 +129,7 @@
            des normales. Devient un CALQUE de type « relief » à gauche : l'amplitude s'y règle à la volée (comme
            l'opacité d'un calque couleur). Respecte la zone d'inpaint si peinte. -->
       <button id="retex-relief" class="control-btn" title="Ajoute un calque de RELIEF géométrique : l'IA génère une height map du détail demandé, reprojetée puis appliquée en déplaçant les vertices le long des normales. Le relief devient un calque à gauche dont tu règles l'amplitude à la volée (le détail dépend de la densité du maillage — subdivise si besoin)">⛰️ Relief IA (→ calque)</button>
+      <button id="retex-texrelief" class="control-btn" title="Génère À LA FOIS la texture et le relief (2 appels IA chaînés) : d'abord la couleur (ex. « cicatrice sur la joue »), puis la height map DÉRIVÉE de ce rendu couleur (le relief se creuse exactement où la couleur est peinte). Produit 2 calques : texture + relief.">🩹 Texture + Relief</button>
       <input type="password" id="retex-apikey" placeholder="Clé API Gemini"
         style="width:100%; box-sizing:border-box; background:#0d0d16; color:#e6e6f0; border:1px solid #2a2a44; border-radius:6px; padding:6px; font:12px/1.4 system-ui,sans-serif;">
       <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener noreferrer"
