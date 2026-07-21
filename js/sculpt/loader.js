@@ -324,7 +324,7 @@ export function createObject(geometry, material, label, reorder = true) {
   mesh.frustumCulled = false;
   mesh.name = label || `Objet ${++state.objectSeq}`;
   mesh.userData.baseMat = material; // matériau réel ; l'affichage courant en dérive
-  mesh.material = displayMaterial(material, state.params.displayMode || 'texture');
+  mesh.material = displayMaterial(material, state.params.displayMode || 'texture', !!(geometry.attributes && geometry.attributes.color));
 
   const wire = new THREE.Mesh(
     geometry,
@@ -566,7 +566,7 @@ export function buildRigMesh(sm, reorder = true) {
   if (reorder) reorderSpatially(sm.geometry);
   if (!sm.geometry.boundsTree) sm.geometry.computeBoundsTree({ setBoundingBox: false });
   sm.userData.baseMat = sm.material;                                  // matériau réel (skinné) ; l'affichage en dérive
-  sm.material = displayMaterial(sm.material, state.params.displayMode || 'texture');
+  sm.material = displayMaterial(sm.material, state.params.displayMode || 'texture', !!(sm.geometry.attributes && sm.geometry.attributes.color));
   const wire = new THREE.SkinnedMesh(sm.geometry, new THREE.MeshBasicMaterial({ color: 0x000000, wireframe: true, transparent: true, opacity: 0.15 }));
   wire.name = 'wireframe'; wire.frustumCulled = false; wire.visible = state.params.displayHelper;
   wire.bind(sm.skeleton, sm.bindMatrix);

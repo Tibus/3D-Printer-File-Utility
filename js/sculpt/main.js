@@ -26,6 +26,7 @@ import { autoOrient } from './orient.js';
 import { decimateMesh } from './decimate.js';
 import { applyDisplayMode } from './display.js';
 import { saveScene, loadScene, clearScene, restoreRig } from './autosave.js';
+import { isRenderMode, enterRenderMode, exitRenderMode, renderFrame as renderModeFrame, onResize as renderModeResize, renderModeParams, setAOStrength, setAORadius, setAmbient, setShadowOpacity, setContactBlur, setCastBlur, setShadowAzimuth, setShadowElevation, setModelShadows, setProjShadow } from './render-mode.js';
 import { captureView, reprojectToUV, compositeLayers, applyTextureCanvas, hasPendingCam, getPendingCam, captureSquareSidePx, paintMaskDab, readMaskCanvas, disposeLayerMask, setLayerMask, invertLayerMask, renderMaskView, renderReliefMaskView, generateNanoBanana } from './retexture.js';
 import { splitByMask } from './split-mask.js';
 import { pushGeom, pushAction, pushMask, pushColor, undo, redo, setHistoryListener } from './history.js';
@@ -377,6 +378,23 @@ function renderObjectList() {
     list.appendChild(row);
   });
   refreshBoolTargets();
+  updateToolAvailability();
+}
+
+// Désactive l'outil Retexture si l'objet actif n'a pas d'UV (le retexturing projette sur les UV).
+function updateToolAvailability() {
+  const m = state.targetMesh;
+  const hasUV = !!(m && m.geometry && m.geometry.attributes && m.geometry.attributes.uv);
+  const btn = document.querySelector('.tool-btn[data-tool="retexture"]');
+  if (btn) {
+    btn.dataset.noUv = hasUV ? '' : '1'; // gardé cliquable (pour expliquer au clic), juste grisé
+    btn.style.opacity = hasUV ? '' : '0.4';
+    btn.style.cursor = hasUV ? '' : 'not-allowed';
+    btn.title = hasUV ? 'Retexturing : compositing de la texture couleur (calques importés / reprojetés)'
+      : 'Retexturing indisponible : l’objet sélectionné ne contient pas de développement UV';
+  }
+  // Si on était en Retexture sur un objet sans UV, on replie sur l'outil Draw.
+  if (!hasUV && state.params.tool === 'retexture') { const d = document.querySelector('.tool-btn[data-tool="draw"]'); if (d) d.click(); }
 }
 
 // Peuple le sélecteur de cible booléenne (tous les objets sauf l'actif) et n'affiche la section
@@ -457,6 +475,7 @@ restoreAutosave();
 
 dom.addEventListener('pointerdown', (e) => {
   if (e.button !== 0 || !state.targetMesh || !state.targetMesh.visible) return;
+  if (isRenderMode()) return; // mode Rendu : preview, pas d'édition (l'orbite reste dispo)
   if (radiusMode) return; // réglage du rayon en cours (X maintenu)
   if (state.params.tool === 'gizmo' || state.params.tool === 'retexture' || state.params.tool === 'other' || state.params.tool === 'bones') return; // pas de sculpt
   if (state.params.tool === 'split') { startLasso(e); return; }
@@ -502,6 +521,7 @@ function processMove() {
   if (!pendingMods) return;
   const mods = pendingMods;
   pendingMods = null;
+  if (isRenderMode()) { hideBrushCursor(); return; } // preview : pas de curseur d'influence
 
   if (!sculpting) {
     // retexture : on montre le cercle d'influence (comme les brosses) pour voir la zone peinte du masque
@@ -1002,7 +1022,7 @@ function retexPaintFrame() {
 function retexScheduleFrame() { if (!_retexScheduled) { _retexScheduled = true; requestAnimationFrame(retexPaintFrame); } }
 
 dom.addEventListener('pointerdown', (e) => {
-  if (state.params.tool !== 'retexture' || e.button !== 0) return;
+  if (state.params.tool !== 'retexture' || e.button !== 0 || isRenderMode()) return;
   if (_retexMaskMode === 'layer' && !_retexSelLayer) return; // rien à peindre
   if (!state.targetMesh || !state.targetMesh.visible) return;
   setMouseFromEvent(e);
@@ -1681,16 +1701,24 @@ function applyToolVisibility(tool) {
 const toolButtons = document.querySelectorAll('.tool-btn');
 toolButtons.forEach((btn) => {
   btn.addEventListener('click', () => {
+    if (btn.dataset.tool === 'retexture' && btn.dataset.noUv === '1') { // pas d'UV -> on explique et on n'active pas
+      setStatus('Retexturing indisponible : l’objet sélectionné ne contient pas de développement UV.');
+      return;
+    }
     state.params.tool = btn.dataset.tool;
     toolButtons.forEach((b) => b.classList.toggle('active', b === btn));
     const t = state.params.tool, isGizmo = t === 'gizmo', isMask = t === 'mask', isRetex = t === 'retexture', isVP = t === 'vertexpaint';
     applyToolVisibility(t); // n'affiche que les options liées à l'outil sélectionné
-    if (t === 'split' || t === 'other' || isGizmo) hideBrushCursor(); // retexture garde le cercle d'influence
+    // Mode Rendu = un outil : on y entre en le sélectionnant, on en sort dès qu'on change d'outil.
+    if (t === 'render') { if (!isRenderMode()) enterRenderMode(); } else if (isRenderMode()) exitRenderMode();
+    if (t === 'split' || t === 'other' || isGizmo || t === 'render') hideBrushCursor(); // retexture garde le cercle d'influence
     if (isGizmo) activateGizmo(state.targetMesh); else deactivateGizmo();
     document.getElementById('gizmo-hint').style.display = isGizmo ? '' : 'none';
     document.getElementById('mask-panel').style.display = isMask ? 'flex' : 'none';
     document.getElementById('retexture-panel').style.display = isRetex ? 'flex' : 'none';
     document.getElementById('vertexpaint-panel').style.display = isVP ? 'flex' : 'none';
+    { const rs = document.getElementById('render-settings'); if (rs) rs.style.display = t === 'render' ? 'flex' : 'none'; }
+    { const dp = document.getElementById('display-param'); if (dp) dp.style.display = t === 'render' ? 'none' : ''; } // pas de mode d'affichage en Rendu
     const isBones = t === 'bones';
     document.getElementById('bones-panel').style.display = isBones ? 'flex' : 'none';
     if (!isBones) {
@@ -2054,7 +2082,7 @@ function syncBonesModeUI() {
   }
   // Sélection d'os en mode pose (capture : avant OrbitControls) — clic sur un marqueur = pas d'orbite.
   dom.addEventListener('pointerdown', (e) => {
-    if (state.params.tool !== 'bones' || !isPoseActive() || isWeightPaintActive() || e.button !== 0) return;
+    if (state.params.tool !== 'bones' || !isPoseActive() || isWeightPaintActive() || e.button !== 0 || isRenderMode()) return;
     setMouseFromEvent(e);
     if (pickBoneAtMouse(true)) state.controls.enabled = false; // twists cliquables, mais 1er clic = os normal (cyclage ensuite)
   }, true);
@@ -2068,7 +2096,7 @@ function syncBonesModeUI() {
   function wpFrame() { _wpSched = false; if (!_wpPainting || !_wpPt) return; wpPaintAt(_wpPt, wpWorldRadius(_wpPt), wpStrength(), _wpErase); _wpPt = null; }
   function wpSchedule() { if (!_wpSched) { _wpSched = true; requestAnimationFrame(wpFrame); } }
   dom.addEventListener('pointerdown', (e) => {
-    if (state.params.tool !== 'bones' || !isWeightPaintActive() || e.button !== 0) return;
+    if (state.params.tool !== 'bones' || !isWeightPaintActive() || e.button !== 0 || isRenderMode()) return;
     setMouseFromEvent(e);
     if (pickBoneAtMouse(true)) { state.controls.enabled = false; return; } // marqueur -> os cible (cyclage twists inclus)
     const hit = wpPickPoint(state.mouse); if (!hit) return; // raycast la surface POSÉE (proxy)
@@ -2208,6 +2236,36 @@ function bindSlider(rangeId, numId, key, format) {
 }
 bindSlider('size-range', 'size-num', 'sizeFrac', (v) => v.toFixed(3)); // le slider règle la fraction d'écran (state.params.size est dérivé par coup)
 
+// ---------- Mode Rendu : réglages (l'entrée/sortie du mode est gérée par l'outil 'render') ----------
+{
+  const rangeVal = (id, vid, fn, fmt) => { const r = document.getElementById(id), v = document.getElementById(vid); if (r) r.addEventListener('input', () => { const x = parseFloat(r.value); fn(x); if (v) v.textContent = fmt(x); }); };
+  rangeVal('render-ambient', 'render-ambient-v', setAmbient, (x) => x.toFixed(1));
+  rangeVal('render-ao', 'render-ao-v', setAOStrength, (x) => x.toFixed(2));
+  rangeVal('render-ao-radius', 'render-ao-radius-v', setAORadius, (x) => x.toFixed(3));
+  rangeVal('render-shadow-op', 'render-shadow-op-v', setShadowOpacity, (x) => x.toFixed(2));
+  rangeVal('render-contact-blur', 'render-contact-blur-v', setContactBlur, (x) => String(Math.round(x)));
+  rangeVal('render-cast-blur', 'render-cast-blur-v', setCastBlur, (x) => String(Math.round(x)));
+  rangeVal('render-shadow-az', 'render-shadow-az-v', setShadowAzimuth, (x) => Math.round(x) + '°');
+  rangeVal('render-shadow-el', 'render-shadow-el-v', setShadowElevation, (x) => Math.round(x) + '°');
+  const ms = document.getElementById('render-model-shadows');
+  if (ms) ms.addEventListener('change', () => setModelShadows(ms.checked));
+  const ps = document.getElementById('render-proj-shadow');
+  if (ps) ps.addEventListener('change', () => setProjShadow(ps.checked));
+  // Synchronise l'UI sur les réglages restaurés du localStorage.
+  const p = renderModeParams();
+  const setUI = (id, vid, val, fmt) => { const r = document.getElementById(id), v = document.getElementById(vid); if (r) r.value = val; if (v) v.textContent = fmt(val); };
+  setUI('render-ambient', 'render-ambient-v', p.ambient, (x) => x.toFixed(1));
+  setUI('render-ao', 'render-ao-v', p.ao, (x) => x.toFixed(2));
+  setUI('render-ao-radius', 'render-ao-radius-v', p.aoRadius, (x) => x.toFixed(3));
+  setUI('render-shadow-op', 'render-shadow-op-v', p.shadowOpacity, (x) => x.toFixed(2));
+  setUI('render-contact-blur', 'render-contact-blur-v', p.contactBlur, (x) => String(Math.round(x)));
+  setUI('render-cast-blur', 'render-cast-blur-v', p.castBlur, (x) => String(Math.round(x)));
+  setUI('render-shadow-az', 'render-shadow-az-v', p.azimuth, (x) => Math.round(x) + '°');
+  setUI('render-shadow-el', 'render-shadow-el-v', p.elevation, (x) => Math.round(x) + '°');
+  if (ms) ms.checked = p.modelShadows;
+  if (ps) ps.checked = p.projShadow;
+}
+
 // Intensité : slider seul + affichage en % (pas de champ éditable).
 {
   const range = document.getElementById('intensity-range');
@@ -2312,6 +2370,7 @@ window.addEventListener('resize', () => {
   state.camera.aspect = window.innerWidth / window.innerHeight;
   state.camera.updateProjectionMatrix();
   state.renderer.setSize(window.innerWidth, window.innerHeight);
+  renderModeResize();
 });
 
 // ---------- Drag & drop de fichier ----------
@@ -2384,7 +2443,7 @@ function animate() {
   perf.lastT = now;
 
   const r0 = performance.now();
-  state.renderer.render(state.scene, state.camera);
+  if (isRenderMode()) renderModeFrame(); else state.renderer.render(state.scene, state.camera);
   const render = performance.now() - r0;
 
   // EMA

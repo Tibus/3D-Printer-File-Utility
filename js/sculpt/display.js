@@ -9,6 +9,7 @@ import * as THREE from 'three';
 
 let _matcapTex = null, _matcapMat = null, _clayMat = null;
 const _texCache = new WeakMap(); // baseMat -> son MeshMatcapMaterial texturé (pas dans userData
+const _texCacheVC = new WeakMap(); // idem mais variante avec vertex colors (objet sans texture mais peint)
 
 // Matcap procédural : sphère grise type studio. Plancher assez clair pour que la texture
 // reste lisible partout (bords non noircis) tout en gardant un dégradé d'éclairage doux.
@@ -35,20 +36,24 @@ function clayMat() { if (!_clayMat) _clayMat = new THREE.MeshStandardMaterial({ 
 // Texture éclairée par le matcap : MeshMatcapMaterial qui reprend la map/couleur/vertexColors
 // du matériau réel. Mis en cache sur le baseMat. Le mask (teinte via onBeforeCompile) et les
 // couleurs par sommet restent supportés.
-function texturedMatcapMat(baseMat) {
-  let m = _texCache.get(baseMat);
+function texturedMatcapMat(baseMat, hasColor) {
+  // Pas de texture mais des vertex colors -> on les affiche (sinon matcap blanc/gris qui masque les couleurs).
+  const wantVC = !!baseMat.vertexColors || (!baseMat.map && !!hasColor);
+  const cache = wantVC ? _texCacheVC : _texCache;
+  let m = cache.get(baseMat);
   if (!m) {
     m = new THREE.MeshMatcapMaterial({
       matcap: matcapTexture(),
       map: baseMat.map || null,
-      color: baseMat.color ? baseMat.color.clone() : new THREE.Color(0xffffff),
-      vertexColors: !!baseMat.vertexColors,
+      // en vertex colors purs, color DOIT être blanc (sinon la teinte du matériau — ex. argile gris — délave les couleurs)
+      color: wantVC ? new THREE.Color(0xffffff) : (baseMat.color ? baseMat.color.clone() : new THREE.Color(0xffffff)),
+      vertexColors: wantVC,
       flatShading: !!baseMat.flatShading,
       side: baseMat.side !== undefined ? baseMat.side : THREE.FrontSide,
       transparent: !!baseMat.transparent,
       opacity: baseMat.opacity !== undefined ? baseMat.opacity : 1,
     });
-    _texCache.set(baseMat, m);
+    cache.set(baseMat, m);
   }
   return m;
 }
@@ -91,11 +96,14 @@ function vcFlatMat() {
 }
 
 // Matériau à afficher pour un matériau de base + un mode.
-export function displayMaterial(baseMat, mode) {
+export function displayMaterial(baseMat, mode, hasColor) {
   if (mode === 'matcap') return matcapMat();
   if (mode === 'clay') return clayMat();
   if (mode === 'vcflat') return vcFlatMat(); // matcap × couleur par sommet, à plat (Vertex Paint)
-  return texturedMatcapMat(baseMat); // 'texture' = texture éclairée par le matcap
+  // 'texture' : SANS map mais AVEC vertex colors -> on affiche les vertex colors (même matériau que le FDM,
+  // matcap × couleur, sans teinte) au lieu d'un matcap délavé. Sinon texture éclairée par le matcap.
+  if (!baseMat.map && hasColor) return vcFlatMat();
+  return texturedMatcapMat(baseMat, hasColor);
 }
 
 // Applique le mode à tous les objets (sauf ceux en vue "épaisseur").
@@ -103,6 +111,7 @@ export function applyDisplayMode(objects, mode) {
   for (const m of objects) {
     if (m.userData._wallView) continue;
     if (!m.userData.baseMat) m.userData.baseMat = m.material;
-    m.material = displayMaterial(m.userData.baseMat, mode);
+    const hasColor = !!(m.geometry && m.geometry.attributes && m.geometry.attributes.color);
+    m.material = displayMaterial(m.userData.baseMat, mode, hasColor);
   }
 }

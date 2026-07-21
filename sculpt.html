@@ -102,6 +102,9 @@
     <button class="tool-btn" data-tool="other" title="Opérations sur le maillage (remesh, réparer, décimer, évider, orienter…)">
       <span class="tool-emoji">🧰</span> Autres
     </button>
+    <button class="tool-btn" data-tool="render" title="Mode Rendu : aperçu studio (environnement, occlusion ambiante, ombre de contact). L'édition est désactivée, l'orbite reste dispo.">
+      <span class="tool-emoji">🎬</span> Rendu
+    </button>
   </div>
 
   <div id="mask-panel" style="display:none; flex-direction:column; gap:10px;">
@@ -325,7 +328,7 @@
     </label>
   </div>
 
-  <div class="param">
+  <div class="param" id="display-param">
     <label>
       <span class="param-label">Affichage</span>
       <select id="display-mode" title="Texture : matériau réel. Matcap : rendu de forme sans texture. Uni : argile plate. Vertex color : couleurs peintes, à plat (Vertex Paint).">
@@ -335,6 +338,19 @@
         <option value="vcflat">Vertex color (à plat)</option>
       </select>
     </label>
+  </div>
+
+  <div id="render-settings" style="display:none; flex-direction:column; gap:8px; padding:8px; background:#00000022; border-radius:8px;">
+    <label style="display:flex; align-items:center; gap:6px; font-size:11px; color:#9a9ac0;"><span style="white-space:nowrap; width:72px;">Ambiant</span><input type="range" id="render-ambient" min="0" max="5" value="1.3" step="0.1" style="flex:1;"><span id="render-ambient-v" style="width:34px; text-align:right;">1.3</span></label>
+    <label style="display:flex; align-items:center; gap:6px; font-size:11px; color:#9a9ac0;"><span style="white-space:nowrap; width:72px;">AO force</span><input type="range" id="render-ao" min="0" max="3" value="1.6" step="0.05" style="flex:1;"><span id="render-ao-v" style="width:34px; text-align:right;">1.60</span></label>
+    <label style="display:flex; align-items:center; gap:6px; font-size:11px; color:#9a9ac0;"><span style="white-space:nowrap; width:72px;">AO rayon</span><input type="range" id="render-ao-radius" min="0.01" max="0.3" value="0.12" step="0.005" style="flex:1;"><span id="render-ao-radius-v" style="width:34px; text-align:right;">0.12</span></label>
+    <label style="display:flex; align-items:center; gap:6px; font-size:11px; color:#9a9ac0;"><span style="white-space:nowrap; width:72px;">Ombre opac.</span><input type="range" id="render-shadow-op" min="0" max="0.8" value="0.35" step="0.01" style="flex:1;"><span id="render-shadow-op-v" style="width:34px; text-align:right;">0.35</span></label>
+    <label style="display:flex; align-items:center; gap:6px; font-size:11px; color:#9a9ac0;"><span style="white-space:nowrap; width:72px;" title="Flou de l'ombre de contact douce au sol (façon AO)">Contact flou</span><input type="range" id="render-contact-blur" min="1" max="50" value="10" step="1" style="flex:1;"><span id="render-contact-blur-v" style="width:34px; text-align:right;">10</span></label>
+    <label style="display:flex; align-items:center; gap:6px; font-size:11px; color:#9a9ac0;"><span style="white-space:nowrap; width:72px;" title="Flou de l'ombre portée : au sol (projection) et sur les objets">Ombre flou</span><input type="range" id="render-cast-blur" min="0" max="50" value="6" step="1" style="flex:1;"><span id="render-cast-blur-v" style="width:34px; text-align:right;">6</span></label>
+    <label style="display:flex; align-items:center; gap:6px; font-size:11px; color:#9a9ac0;"><span style="white-space:nowrap; width:72px;">Direction</span><input type="range" id="render-shadow-az" min="0" max="360" value="45" step="1" style="flex:1;"><span id="render-shadow-az-v" style="width:34px; text-align:right;">45°</span></label>
+    <label style="display:flex; align-items:center; gap:6px; font-size:11px; color:#9a9ac0;"><span style="white-space:nowrap; width:72px;" title="90° = pile au-dessus (ombre sous le modèle)">Hauteur</span><input type="range" id="render-shadow-el" min="10" max="90" value="60" step="1" style="flex:1;"><span id="render-shadow-el-v" style="width:34px; text-align:right;">60°</span></label>
+    <label class="check" style="font-size:11px; color:#9a9ac0;"><input type="checkbox" id="render-model-shadows" checked><span title="Le modèle reçoit les ombres portées de la lumière directionnelle (auto-ombrage)">Ombres sur le modèle</span></label>
+    <label class="check" style="font-size:11px; color:#9a9ac0;"><input type="checkbox" id="render-proj-shadow" checked><span title="Ombre projetée au sol dans l'axe de la lumière (en plus de l'ombre de contact douce)">Ombre projetée au sol</span></label>
   </div>
 
   <button id="subdivide-btn" class="control-btn" data-tools="other">🔺 Subdiviser (ajouter du détail)</button>
