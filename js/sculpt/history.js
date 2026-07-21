@@ -33,6 +33,16 @@ export function pushAction(undoFn, redoFn, dispose) { pushEntry({ type: 'action'
 // change : { geometry, indices, old, new } sur le masque net (maskSharp)
 export function pushMask(change) { if (change && change.indices.length) pushEntry({ type: 'mask', ...change }); }
 
+// change : { mesh, indices, old, new } (3 floats/sommet) sur geometry.attributes.color (vertex paint)
+export function pushColor(change) { if (change && change.indices.length) pushEntry({ type: 'color', ...change }); }
+
+function applyColor(e, useNew) {
+  const g = e.mesh.geometry, col = g.attributes.color; if (!col) return;
+  const arr = col.array, src = useNew ? e.new : e.old, idx = e.indices;
+  for (let k = 0; k < idx.length; k++) { const v3 = idx[k] * 3, o = k * 3; arr[v3] = src[o]; arr[v3 + 1] = src[o + 1]; arr[v3 + 2] = src[o + 2]; }
+  col.needsUpdate = true;
+}
+
 function applyMask(e, useNew) {
   const sharp = e.geometry.userData && e.geometry.userData.maskSharp;
   if (!sharp) return;
@@ -58,13 +68,13 @@ function applyGeom(e, useNew) {
 
 export function undo() {
   const e = undoStack.pop(); if (!e) return;
-  if (e.type === 'geom') applyGeom(e, false); else if (e.type === 'mask') applyMask(e, false); else e.undoFn();
+  if (e.type === 'geom') applyGeom(e, false); else if (e.type === 'mask') applyMask(e, false); else if (e.type === 'color') applyColor(e, false); else e.undoFn();
   redoStack.push(e); fire();
 }
 
 export function redo() {
   const e = redoStack.pop(); if (!e) return;
-  if (e.type === 'geom') applyGeom(e, true); else if (e.type === 'mask') applyMask(e, true); else e.redoFn();
+  if (e.type === 'geom') applyGeom(e, true); else if (e.type === 'mask') applyMask(e, true); else if (e.type === 'color') applyColor(e, true); else e.redoFn();
   undoStack.push(e); fire();
 }
 

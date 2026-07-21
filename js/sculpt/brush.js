@@ -767,3 +767,86 @@ function buildRuns(indexSet, maxGap = 32) {
   runs.push(s, prev - s + 1);
   return runs;
 }
+
+// ---------- Vertex Paint : peinture de couleur EXACTE (pas de fade) ----------
+// Écrit la couleur (r,g,b) telle quelle dans geometry.attributes.color sur les sommets sous le
+// curseur (stamp circulaire dur : dans le rayon = peint, sinon rien). Coutures soudées (tous les
+// membres du groupe reçoivent la même couleur -> pas de fissure). Undo dédié (recordColor*).
+let _colMesh = null, _colStamp = null, _colId = 0;
+const _colIdx = [], _colOld = [];
+export function recordColorBegin() {
+  _colMesh = state.targetMesh; if (!_colMesh || !_colMesh.geometry.attributes.color) { _colMesh = null; return; }
+  const n = _colMesh.geometry.attributes.position.count;
+  if (!_colStamp || _colStamp.length < n) _colStamp = new Uint32Array(n);
+  _colId++; _colIdx.length = 0; _colOld.length = 0;
+}
+function recordColorTouch(vi, col) {
+  if (!_colMesh || _colStamp[vi] === _colId) return;
+  _colStamp[vi] = _colId; const v3 = vi * 3;
+  _colIdx.push(vi); _colOld.push(col[v3], col[v3 + 1], col[v3 + 2]);
+}
+// Renvoie { mesh, indices, old, new } (3 floats/sommet) pour l'historique, ou null si rien peint.
+export function recordColorEnd() {
+  const mesh = _colMesh; _colMesh = null;
+  if (!mesh || !_colIdx.length) return null;
+  const col = mesh.geometry.attributes.color.array;
+  const indices = new Uint32Array(_colIdx);
+  const old = Float32Array.from(_colOld);
+  const neu = new Float32Array(_colIdx.length * 3);
+  for (let k = 0; k < _colIdx.length; k++) { const v3 = _colIdx[k] * 3, o = k * 3; neu[o] = col[v3]; neu[o + 1] = col[v3 + 1]; neu[o + 2] = col[v3 + 2]; }
+  return { mesh, indices, old, new: neu };
+}
+
+// Peinture du MASQUE d'un calque de relief : modifie le poids par sommet layer.w[k] (1 = plein relief,
+// 0 = effacé) sous le curseur, avec falloff doux (plusieurs passes atteignent la cible). erase -> vers 0,
+// sinon -> vers 1. Coutures : tous les membres d'un groupe reçoivent le même poids. Renvoie true si modifié.
+// L'appelant doit ensuite reapply le calque (repositionne les vertices selon w).
+export function paintReliefMaskAt(worldPoint, layer, erase) {
+  const mesh = state.targetMesh; if (!mesh || !layer || !layer.w) return false;
+  if (!layer._mset || layer._mset.size !== layer.moved.length) { layer._mset = new Map(); for (let k = 0; k < layer.moved.length; k++) layer._mset.set(layer.moved[k], k); }
+  const mset = layer._mset;
+  const pos = mesh.geometry.attributes.position.array;
+  toLocal(worldPoint, _localCenter);
+  collectInSphere(_localCenter, state.params.size);
+  if (!_idxCount) return false;
+  const invSize = 1 / state.params.size;
+  const flut = state.falloff, fn1 = flut.length - 1;
+  const rep = state.rep, gm = state.groupMembers, hasSeams = gm && gm.size > 0;
+  const lcx = _localCenter.x, lcy = _localCenter.y, lcz = _localCenter.z;
+  const target = erase ? 0 : 1;
+  let changed = false;
+  for (let i = 0; i < _idxCount; i++) {
+    const v = _idxArr[i], v3 = v * 3;
+    const dx = pos[v3] - lcx, dy = pos[v3 + 1] - lcy, dz = pos[v3 + 2] - lcz;
+    const dd = Math.sqrt(dx * dx + dy * dy + dz * dz) * invSize;
+    if (dd > 1) continue;
+    const f = flut[(dd * fn1) | 0] * 0.5; // douceur : chaque passe rapproche de la cible de la moitié du falloff
+    const applyK = (k) => { if (k === undefined) return; const cur = layer.w[k]; const nv = cur + (target - cur) * f; if (nv !== cur) { layer.w[k] = nv; changed = true; } };
+    if (hasSeams) { const members = gm.get(rep[v]); if (members) { for (let j = 0; j < members.length; j++) applyK(mset.get(members[j])); continue; } }
+    applyK(mset.get(v));
+  }
+  return changed;
+}
+
+export function paintColorAt(worldPoint, r, g, b) {
+  const mesh = state.targetMesh; if (!mesh) return;
+  const geometry = mesh.geometry;
+  const colAttr = geometry.attributes.color; if (!colAttr) return;
+  const col = colAttr.array, pos = geometry.attributes.position.array;
+  toLocal(worldPoint, _localCenter);
+  collectInSphere(_localCenter, state.params.size);
+  if (!_idxCount) return;
+  const rep = state.rep, groupMembers = state.groupMembers, hasSeams = groupMembers && groupMembers.size > 0;
+  const r2 = state.params.size * state.params.size;
+  const lcx = _localCenter.x, lcy = _localCenter.y, lcz = _localCenter.z;
+  let vmin = Infinity, vmax = -1;
+  const put = (v) => { const v3 = v * 3; recordColorTouch(v, col); col[v3] = r; col[v3 + 1] = g; col[v3 + 2] = b; if (v < vmin) vmin = v; if (v > vmax) vmax = v; };
+  for (let i = 0; i < _idxCount; i++) {
+    const v = _idxArr[i], v3 = v * 3;
+    const dx = pos[v3] - lcx, dy = pos[v3 + 1] - lcy, dz = pos[v3 + 2] - lcz;
+    if (dx * dx + dy * dy + dz * dz > r2) continue;            // stamp dur : hors rayon -> pas peint
+    if (hasSeams) { const members = groupMembers.get(rep[v]); if (members) { for (let k = 0; k < members.length; k++) put(members[k]); continue; } }
+    put(v);
+  }
+  if (vmax >= 0) markUpdateRange(colAttr, vmin, vmax);
+}

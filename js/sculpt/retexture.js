@@ -501,6 +501,37 @@ export function renderMaskView(mesh, maskCanvas, cam, size = 96, uncovered = fal
   return cv;
 }
 
+// Vignette du MASQUE d'un calque de relief : rend l'objet depuis la caméra de capture (cam) en coloriant
+// chaque sommet par une nuance de gris (blanc = relief plein, noir = effacé/hors zone). `gray` = Float32Array
+// (N·3, gris par sommet). Réutilise position/index de la géométrie (buffers partagés, non libérés).
+export function renderReliefMaskView(mesh, gray, cam, size = 96) {
+  if (!cam || !cam.camLocal) return null;
+  const r = state.renderer, g = mesh.geometry;
+  const tg = new THREE.BufferGeometry();
+  tg.setAttribute('position', g.attributes.position);
+  if (g.index) tg.setIndex(g.index);
+  tg.setAttribute('color', new THREE.BufferAttribute(gray, 3));
+  const mat = new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.DoubleSide });
+  const m = new THREE.Mesh(tg, mat);
+  m.matrixAutoUpdate = false; m.matrixWorldAutoUpdate = false; m.matrixWorld.identity(); m.frustumCulled = false;
+  const scn = new THREE.Scene(); scn.add(m);
+  const camLocalInv = cam.camLocal.clone().invert();
+  const rcam = new THREE.Camera(); rcam.matrixAutoUpdate = false; rcam.matrixWorldAutoUpdate = false;
+  rcam.matrixWorld.copy(cam.camLocal); rcam.matrixWorldInverse.copy(camLocalInv); rcam.projectionMatrix.copy(cam.proj);
+  const rt = new THREE.WebGLRenderTarget(size, size);
+  const prev = r.getRenderTarget(), pc = r.getClearColor(new THREE.Color()), pa = r.getClearAlpha(), pac = r.autoClear;
+  r.autoClear = true; r.setRenderTarget(rt); r.setClearColor(0x000000, 1); r.clear(); r.render(scn, rcam);
+  r.setRenderTarget(prev); r.setClearColor(pc, pa); r.autoClear = pac;
+  const buf = new Uint8Array(size * size * 4); r.readRenderTargetPixels(rt, 0, 0, size, size, buf);
+  const cv = document.createElement('canvas'); cv.width = cv.height = size;
+  const ctx = cv.getContext('2d'); const img = ctx.createImageData(size, size); const row = size * 4;
+  for (let y = 0; y < size; y++) { const s = (size - 1 - y) * row, d = y * row; img.data.set(buf.subarray(s, s + row), d); }
+  ctx.putImageData(img, 0, 0);
+  rt.dispose(); mat.dispose();
+  tg.deleteAttribute('position'); tg.setIndex(null); tg.dispose(); // ne libère QUE le buffer color (position/index partagés)
+  return cv;
+}
+
 // Remplit tout le masque : reveal=true -> tout révélé (alpha 1), false -> tout masqué (alpha 0).
 export function setLayerMask(layer, texSize, reveal) {
   ensureLayerMaskRT(layer, texSize, reveal);

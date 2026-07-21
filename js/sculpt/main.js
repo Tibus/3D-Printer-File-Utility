@@ -12,6 +12,7 @@ import {
   raycastSurface, updateBrushCursor, hideBrushCursor, performStroke,
   startGrab, moveGrab, endGrab, beginStroke,
   recordStrokeBegin, recordStrokeEnd,
+  paintColorAt, recordColorBegin, recordColorEnd, paintReliefMaskAt,
 } from './brush.js';
 import { lassoSplitAsync } from './split.js';
 import { lassoSplitCSG } from './split-csg.js';
@@ -25,9 +26,10 @@ import { autoOrient } from './orient.js';
 import { decimateMesh } from './decimate.js';
 import { applyDisplayMode } from './display.js';
 import { saveScene, loadScene, clearScene } from './autosave.js';
-import { captureView, reprojectToUV, compositeLayers, applyTextureCanvas, hasPendingCam, getPendingCam, captureSquareSidePx, paintMaskDab, readMaskCanvas, disposeLayerMask, setLayerMask, invertLayerMask, renderMaskView, generateNanoBanana, NANO_HEIGHT, NANO_HEIGHT_DERIVE } from './retexture.js';
+import { captureView, reprojectToUV, compositeLayers, applyTextureCanvas, hasPendingCam, getPendingCam, captureSquareSidePx, paintMaskDab, readMaskCanvas, disposeLayerMask, setLayerMask, invertLayerMask, renderMaskView, renderReliefMaskView, generateNanoBanana } from './retexture.js';
 import { splitByMask } from './split-mask.js';
-import { pushGeom, pushAction, pushMask, undo, redo, setHistoryListener } from './history.js';
+import { pushGeom, pushAction, pushMask, pushColor, undo, redo, setHistoryListener } from './history.js';
+import { getPalette, ensureColorAttr, eyedropSample, applyPaletteFromTexture, buildVertexPaint3MF, rgbToHex, hexToRgb, nearestPaletteIndex } from './vertexpaint.js';
 import { initGizmo, activateGizmo, deactivateGizmo, setAltPivot, isGizmoActive } from './gizmo.js';
 import { ensureMask, invertMask, clearMask, setMaskBlur, rebuildMask, bakeMaskBlur, maskRecordBegin, maskRecordEnd } from './mask.js';
 import { exportGLB, exportOBJ } from './exporter.js';
@@ -107,8 +109,21 @@ const SPACING_FRAC = 0.15;
 const MAX_STAMPS = 10; // garde-fou sur un grand saut de curseur
 const _ls = { x: 0, y: 0, z: 0, has: false };
 
+// Un « coup » à la position p : sculpt géométrique OU peinture de couleur (Vertex Paint).
+const _vpMirror = new THREE.Vector3();
+function strokeStamp(p, mods) {
+  if (state.params.tool === 'vertexpaint') {
+    const mesh = state.targetMesh; if (!mesh) return;
+    const pal = getPalette(mesh), c = pal[_vpSel]; if (!c) return;
+    paintColorAt(p, c.r, c.g, c.b);
+    if (state.params.symmetryX) { _vpMirror.set(-p.x, p.y, p.z); paintColorAt(_vpMirror, c.r, c.g, c.b); }
+    return;
+  }
+  performStroke(p, mods);
+}
+
 function stampSpaced(p, mods) {
-  if (!_ls.has) { performStroke(p, mods); _ls.x = p.x; _ls.y = p.y; _ls.z = p.z; _ls.has = true; return; }
+  if (!_ls.has) { strokeStamp(p, mods); _ls.x = p.x; _ls.y = p.y; _ls.z = p.z; _ls.has = true; return; }
   const spacing = Math.max(1e-4, state.params.size * SPACING_FRAC);
   let dx = p.x - _ls.x, dy = p.y - _ls.y, dz = p.z - _ls.z;
   let remaining = Math.sqrt(dx * dx + dy * dy + dz * dz);
@@ -116,7 +131,7 @@ function stampSpaced(p, mods) {
   while (remaining >= spacing && stamps < MAX_STAMPS) {
     const t = spacing / remaining;
     _ls.x += (p.x - _ls.x) * t; _ls.y += (p.y - _ls.y) * t; _ls.z += (p.z - _ls.z) * t;
-    performStroke(_ls, mods);
+    strokeStamp(_ls, mods);
     dx = p.x - _ls.x; dy = p.y - _ls.y; dz = p.z - _ls.z;
     remaining = Math.sqrt(dx * dx + dy * dy + dz * dz);
     stamps++;
@@ -393,6 +408,12 @@ dom.addEventListener('pointerdown', (e) => {
   if (radiusMode) return; // réglage du rayon en cours (X maintenu)
   if (state.params.tool === 'gizmo' || state.params.tool === 'retexture' || state.params.tool === 'other') return; // pas de sculpt
   if (state.params.tool === 'split') { startLasso(e); return; }
+  // Vertex Paint, pipette : panel pipette -> AJOUTE la couleur ; « i » maintenu -> SÉLECTIONNE la couleur
+  // de palette la plus proche. Dans les deux cas : pas de peinture (retour immédiat).
+  if (state.params.tool === 'vertexpaint' && (_vpPipette || _vpKeyPick)) {
+    setMouseFromEvent(e); const hit = raycastSurface(); if (hit) { if (_vpKeyPick) vpPickSelect(hit); else vpPick(hit); }
+    return;
+  }
   setMouseFromEvent(e);
   const hit = raycastSurface();
   if (!hit) return; // clic dans le vide => laisser OrbitControls tourner
@@ -402,6 +423,7 @@ dom.addEventListener('pointerdown', (e) => {
   state.controls.enabled = false;
   try { dom.setPointerCapture(e.pointerId); } catch (_) {}
   if (state.params.tool === 'mask') { ensureMask(state.targetMesh.geometry, state.targetMesh.material); maskRecordBegin(state.targetMesh.geometry); }
+  else if (state.params.tool === 'vertexpaint') { ensureColorAttr(state.targetMesh); state.targetMesh.userData._vpPainted = true; recordColorBegin(); } // undo couleur
   else recordStrokeBegin(); // undo : démarre la capture des vertices touchés
 
   if (state.params.tool === 'move') {
@@ -429,6 +451,8 @@ function processMove() {
   if (!sculpting) {
     // retexture : on montre le cercle d'influence (comme les brosses) pour voir la zone peinte du masque
     if (state.params.tool === 'split' || state.params.tool === 'gizmo' || state.params.tool === 'other') { hideBrushCursor(); return; }
+    if (state.params.tool === 'vertexpaint' && _vpKeyPick) { const h = raycastSurface(); if (h) vpPickSelect(h); hideBrushCursor(); return; } // « i » : pipette continue
+    if (state.params.tool === 'vertexpaint' && _vpPipette) { hideBrushCursor(); return; } // pipette panel : pas de cercle
     updateBrushCursor(raycastSurface());
     return;
   }
@@ -469,6 +493,8 @@ function endStroke(e) {
   if (state.params.tool === 'mask') {
     if (state.targetMesh) rebuildMask(state.targetMesh.geometry); // applique le flou en fin de stroke
     pushMask(maskRecordEnd());
+  } else if (state.params.tool === 'vertexpaint') {
+    pushColor(recordColorEnd()); // undo : enregistre la peinture terminée
   } else {
     pushGeom(recordStrokeEnd()); // undo : enregistre le stroke terminé
   }
@@ -514,11 +540,19 @@ document.getElementById('new-scene-btn').addEventListener('click', () => {
   range.value = state.params.remeshRes; val.textContent = state.params.remeshRes;
   range.addEventListener('input', (e) => { state.params.remeshRes = parseInt(e.target.value, 10); val.textContent = state.params.remeshRes; });
 }
+// Change le mode d'affichage (met à jour l'état + le select + les matériaux). En mode « vcflat »
+// (Vertex Paint), garantit un attribut color sur chaque objet (sinon rendu noir).
+function setDisplayMode(mode) {
+  state.params.displayMode = mode;
+  const sel = document.getElementById('display-mode'); if (sel) sel.value = mode;
+  if (mode === 'vcflat') for (const o of state.objects) if (o.isMesh) ensureColorAttr(o);
+  applyDisplayMode(state.objects, mode);
+}
 {
   const sel = document.getElementById('display-mode');
   if (sel) {
     sel.value = state.params.displayMode;
-    sel.addEventListener('change', (e) => { state.params.displayMode = e.target.value; applyDisplayMode(state.objects, e.target.value); });
+    sel.addEventListener('change', (e) => setDisplayMode(e.target.value));
   }
 }
 
@@ -629,6 +663,41 @@ function loadImageFile(file) {
 function loadImageURL(url) {
   return new Promise((res, rej) => { const im = new Image(); im.onload = () => res(im); im.onerror = () => rej(new Error('image illisible')); im.src = url; });
 }
+// ---------- Édition N&B du masque d'un calque RELIEF (parité avec les masques couleur) ----------
+// En édition : l'objet est affiché en niveaux de gris du poids w (blanc = relief plein, noir = effacé),
+// via l'attribut color temporaire + le matériau vcflat. On restaure l'attribut/le mode en sortant.
+let _reliefMaskEdit = false, _reliefMaskLayer = null, _reliefBWSaved = null, _reliefBWMode = null;
+function reliefGrayColors(mesh, layer) {
+  const N = mesh.geometry.attributes.position.count;
+  const cols = new Float32Array(N * 3); // 0 = noir (hors zone de relief)
+  for (let k = 0; k < layer.moved.length; k++) { const w = layer.w[k], v3 = layer.moved[k] * 3; cols[v3] = w; cols[v3 + 1] = w; cols[v3 + 2] = w; }
+  return cols;
+}
+function updateReliefGrayLive(mesh, layer) { // met à jour l'affichage N&B pendant la peinture
+  const col = mesh.geometry.attributes.color; if (!col) return;
+  const a = col.array;
+  for (let k = 0; k < layer.moved.length; k++) { const w = layer.w[k], v3 = layer.moved[k] * 3; a[v3] = w; a[v3 + 1] = w; a[v3 + 2] = w; }
+  col.needsUpdate = true;
+}
+function enterReliefMaskEdit(mesh, layer) {
+  if (_reliefMaskEdit) exitReliefMaskEdit(mesh);
+  _reliefMaskEdit = true; _reliefMaskLayer = layer;
+  _retexSelLayer = layer; _retexMaskMode = 'layer';
+  _reliefBWSaved = mesh.geometry.getAttribute('color') || null;   // sauve d'éventuelles couleurs (vertex paint)
+  _reliefBWMode = state.params.displayMode;
+  mesh.geometry.setAttribute('color', new THREE.BufferAttribute(reliefGrayColors(mesh, layer), 3));
+  setDisplayMode('vcflat');
+}
+function exitReliefMaskEdit(mesh) {
+  if (!_reliefMaskEdit) return;
+  _reliefMaskEdit = false; _reliefMaskLayer = null;
+  if (mesh) {
+    if (_reliefBWSaved) mesh.geometry.setAttribute('color', _reliefBWSaved); else mesh.geometry.deleteAttribute('color');
+    setDisplayMode(_reliefBWMode || 'texture');
+  }
+  _reliefBWSaved = null;
+}
+
 // Menu contextuel des opérations de masque d'un calque (clic droit sur la ligne / la vignette masque).
 let _maskMenuAway = null;
 function closeMaskMenu() {
@@ -639,8 +708,30 @@ function showMaskMenu(x, y, layer) {
   closeMaskMenu();
   const mesh = state.targetMesh; if (!mesh) return;
   const menu = document.createElement('div'); menu.id = 'retex-mask-menu'; menu.className = 'ctx-menu';
-  const refresh = () => { readMaskCanvas(layer, RETEX_SIZE, mesh); recomposeRetex(); renderRetexLayers(); };
   const item = (label, fn) => { const b = document.createElement('button'); b.className = 'ctx-item'; b.textContent = label; b.onclick = () => { fn(); closeMaskMenu(); }; menu.appendChild(b); };
+
+  if (layer.type === 'relief') {
+    // Masque de relief (poids w par sommet) : mêmes opérations que les masques couleur.
+    const editing = _reliefMaskEdit && _reliefMaskLayer === layer;
+    const live = () => { if (_reliefMaskEdit && _reliefMaskLayer === layer) updateReliefGrayLive(mesh, layer); };
+    item(editing ? '🎨 Revenir à l’affichage' : '✏️ Éditer le masque sur l’objet (N&B)', () => {
+      if (editing) exitReliefMaskEdit(mesh); else enterReliefMaskEdit(mesh, layer);
+      renderRetexLayers();
+      setStatus(_reliefMaskEdit ? 'Édition du masque relief (N&B) — peins pour révéler, Alt = effacer.' : 'Affichage normal.');
+    });
+    item('🎭 Masque plein (tout le relief)', () => { layer.w.fill(1); reapplyReliefLayer(mesh, layer, true); live(); renderRetexLayers(); });
+    item('⬛ Masque vide (relief effacé)', () => { layer.w.fill(0); reapplyReliefLayer(mesh, layer, true); live(); renderRetexLayers(); });
+    item('🔄 Inverser le masque', () => { for (let k = 0; k < layer.w.length; k++) layer.w[k] = 1 - layer.w[k]; reapplyReliefLayer(mesh, layer, true); live(); renderRetexLayers(); });
+    document.body.appendChild(menu);
+    const r0 = menu.getBoundingClientRect();
+    menu.style.left = Math.max(4, Math.min(x, window.innerWidth - r0.width - 8)) + 'px';
+    menu.style.top = Math.max(4, Math.min(y, window.innerHeight - r0.height - 8)) + 'px';
+    _maskMenuAway = (e) => { if (!menu.contains(e.target)) closeMaskMenu(); };
+    setTimeout(() => document.addEventListener('pointerdown', _maskMenuAway), 0);
+    return;
+  }
+
+  const refresh = () => { readMaskCanvas(layer, RETEX_SIZE, mesh); recomposeRetex(); renderRetexLayers(); };
   // Bascule l'affichage du masque en N&B sur l'objet (pour l'éditer directement).
   const editing = _retexMaskEdit && _retexSelLayer === layer;
   item(editing ? '🎨 Revenir à la couleur' : '✏️ Éditer le masque sur l’objet (N&B)', () => {
@@ -667,23 +758,41 @@ function renderRetexLayers() {
   if (!layers.length) { box.innerHTML = '<div style="font-size:11px;color:#888;">Aucun calque</div>'; return; }
   for (let i = layers.length - 1; i >= 0; i--) { // du dessus (dernier) vers le bas
     const l = layers[i];
-    // ---- Calque RELIEF : vignette height + curseur d'amplitude (comme l'opacité) + visibilité/suppression ----
+    // ---- Calque RELIEF : vignette + amplitude (~opacité) + visibilité/suppression + MASQUE peignable ----
     if (l.type === 'relief') {
-      const row = document.createElement('div'); row.className = 'obj-row';
-      row.title = 'Calque de relief géométrique (déplacement des vertices)';
+      const sel = _retexSelLayer === l;
+      const row = document.createElement('div'); row.className = 'obj-row' + (sel ? ' active' : '');
+      row.title = 'Calque de relief — sélectionne-le puis peins sur l’objet pour révéler / effacer (Alt) le relief';
+      const openMenuR = (e) => { e.preventDefault(); showMaskMenu(e.clientX, e.clientY, l); };
+      row.oncontextmenu = openMenuR;
       const thumb = document.createElement('canvas'); thumb.width = thumb.height = 44; thumb.className = 'retex-thumb';
       { const tc = thumb.getContext('2d'); tc.fillStyle = '#12121e'; tc.fillRect(0, 0, 44, 44); if (l.thumb) { try { tc.drawImage(l.thumb, 0, 0, 44, 44); } catch (_) {} } }
+      const selectRelief = () => {
+        const willSel = _retexSelLayer !== l;
+        if (_reliefMaskEdit && _reliefMaskLayer === l && !willSel) exitReliefMaskEdit(mesh); // désélection pendant l'édition N&B
+        _retexSelLayer = willSel ? l : null; _retexMaskMode = 'layer'; _retexMaskEdit = false;
+        renderRetexLayers(); setStatus(willSel ? 'Masque de relief — peins sur l’objet pour révéler, Alt = effacer.' : 'Calque désélectionné.');
+      };
+      thumb.onclick = selectRelief;
+      // Vignette de MASQUE (blanc = relief plein, noir = effacé) rendue dans le cadrage de capture.
+      const sel2 = _retexSelLayer === l;
+      const mthumb = document.createElement('canvas'); mthumb.width = mthumb.height = 44; mthumb.className = 'retex-thumb retex-mask-thumb has-mask' + (sel2 ? ' editing' : '');
+      mthumb.title = 'Masque du relief — clic gauche : sélectionner ; clic droit : options (éditer N&B, plein, vide, inverser)';
+      mthumb.oncontextmenu = openMenuR;
+      { const mc = mthumb.getContext('2d'); mc.fillStyle = '#0a0a12'; mc.fillRect(0, 0, 44, 44);
+        try { const gray = new Float32Array(mesh.geometry.attributes.position.count * 3); for (let k = 0; k < l.moved.length; k++) { const w = l.w[k], v3 = l.moved[k] * 3; gray[v3] = w; gray[v3 + 1] = w; gray[v3 + 2] = w; } const mv = renderReliefMaskView(mesh, gray, l.cam, 96); if (mv) mc.drawImage(mv, 0, 0, 44, 44); } catch (_) {} }
+      mthumb.onclick = selectRelief;
       const eye = document.createElement('button'); eye.className = 'obj-btn'; eye.textContent = l.visible ? '👁' : '🚫';
       eye.title = l.visible ? 'Masquer le relief' : 'Afficher le relief';
-      eye.onclick = () => { l.visible = !l.visible; applyReliefLayerDelta(mesh, l, l.visible ? l.amplitude : 0, true); renderRetexLayers(); };
-      const name = document.createElement('span'); name.className = 'obj-name'; name.textContent = l.name; name.style.fontSize = '11px';
+      eye.onclick = () => { l.visible = !l.visible; reapplyReliefLayer(mesh, l, true); renderRetexLayers(); };
+      const name = document.createElement('span'); name.className = 'obj-name'; name.textContent = l.name; name.style.cssText = 'font-size:11px;cursor:pointer;'; name.onclick = selectRelief;
       const amp = document.createElement('input'); amp.type = 'range'; amp.min = 0; amp.max = 100; amp.value = Math.round((l.amplitude ?? RELIEF_DEFAULT_AMP) * 100); amp.style.width = '48px';
       amp.title = 'Amplitude du relief';
       amp.oninput = () => { l.amplitude = amp.value / 100; if (l.visible) reliefSlideSchedule(mesh, l); };
-      amp.onchange = () => { if (l.visible) applyReliefLayerDelta(mesh, l, l.amplitude, true); }; // relâcher -> refit BVH
+      amp.onchange = () => { if (l.visible) reapplyReliefLayer(mesh, l, true); }; // relâcher -> refit BVH
       const del = document.createElement('button'); del.className = 'obj-btn'; del.textContent = '🗑'; del.title = 'Supprimer le relief';
-      del.onclick = () => { applyReliefLayerDelta(mesh, l, 0, true); layers.splice(i, 1); renderRetexLayers(); };
-      row.append(thumb, name, eye, amp, del);
+      del.onclick = () => { l.visible = false; reapplyReliefLayer(mesh, l, true); if (_retexSelLayer === l) _retexSelLayer = null; layers.splice(i, 1); renderRetexLayers(); };
+      row.append(thumb, mthumb, name, eye, amp, del);
       box.appendChild(row);
       continue;
     }
@@ -804,6 +913,15 @@ function retexPaintFrame() {
   _retexScheduled = false;
   const mesh = state.targetMesh, l = retexPaintTarget();
   if (!_retexPainting || !_retexPendingPt || !mesh || !l) return;
+  // Calque relief : on peint son MASQUE (poids par sommet) -> repositionne les vertices, pas de masque UV.
+  if (l.type === 'relief') {
+    if (paintReliefMaskAt(_retexPendingPt.clone(), l, _retexErase)) {
+      reapplyReliefLayer(mesh, l, false);
+      if (_reliefMaskEdit && _reliefMaskLayer === l) updateReliefGrayLive(mesh, l); // affichage N&B live
+    }
+    _retexPendingPt = null;
+    return;
+  }
   const radius = state.params.size;
   const hardness = state.params.falloffHardness != null ? state.params.falloffHardness : 0.5;
   const strength = Math.max(0.05, (state.params.intensity / 100) * 0.5);
@@ -835,7 +953,9 @@ function endRetexPaint(e) {
   if (!_retexPainting) return;
   _retexPainting = false; state.controls.enabled = true;
   if (e && e.pointerId !== undefined) { try { dom.releasePointerCapture(e.pointerId); } catch (_) {} }
-  const l = retexPaintTarget(); if (l) { readMaskCanvas(l, RETEX_SIZE, state.targetMesh); recomposeRetex(); renderRetexLayers(); }
+  const l = retexPaintTarget();
+  if (l && l.type === 'relief') { reapplyReliefLayer(state.targetMesh, l, true); renderRetexLayers(); return; } // refit BVH + refresh vignette masque
+  if (l) { readMaskCanvas(l, RETEX_SIZE, state.targetMesh); recomposeRetex(); renderRetexLayers(); }
 }
 dom.addEventListener('pointerup', endRetexPaint);
 dom.addEventListener('pointercancel', endRetexPaint);
@@ -916,9 +1036,12 @@ async function multiViewTexture(mesh, prompt, key, nViews) {
   const accum = document.createElement('canvas'); accum.width = accum.height = RETEX_SIZE; const actx = accum.getContext('2d');
   const disp = document.createElement('canvas'); disp.width = disp.height = RETEX_SIZE; const dctx = disp.getContext('2d');
   const raf2 = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+  const dbg = document.getElementById('retex-debug').checked;
+  const dl = (href, name) => { const a = document.createElement('a'); a.href = href; a.download = name; a.click(); };
   try {
     for (let i = 0; i < nViews; i++) {
       showLoading(true, `Multi-view ${i + 1}/${nViews}…`);
+      const vv = String(i + 1).padStart(2, '0'); // préfixe debug par vue
       const az = (i / nViews) * Math.PI * 2, ce = Math.cos(el), se = Math.sin(el);
       cam.position.set(center.x + dist * Math.cos(az) * ce, center.y + dist * se, center.z + dist * Math.sin(az) * ce);
       cam.up.set(0, 1, 0); cam.lookAt(center); ctrls.target.copy(center); cam.updateMatrixWorld(true);
@@ -935,10 +1058,18 @@ async function multiViewTexture(mesh, prompt, key, nViews) {
       const cutImg = document.createElement('canvas'); cutImg.width = w; cutImg.height = h;
       { const c = cutImg.getContext('2d'); c.drawImage(aiImg, 0, 0); c.globalCompositeOperation = 'destination-in'; c.drawImage(cut, 0, 0); c.globalCompositeOperation = 'source-over'; }
       const viewCanvas = reprojectToUV(cutImg, mesh, RETEX_SIZE);
+      if (dbg) {
+        dl(capUrl, `mv-${vv}-a-capture.png`);
+        if (maskUrl) dl(maskUrl, `mv-${vv}-b-masque-zones-vides.png`);
+        dl(outUrl, `mv-${vv}-c-ia.png`);
+        dl(cutImg.toDataURL('image/png'), `mv-${vv}-d-detoure.png`);
+        dl(viewCanvas.toDataURL('image/png'), `mv-${vv}-e-bake-uv.png`);
+      }
       actx.globalCompositeOperation = i === 0 ? 'source-over' : 'destination-over'; // ne remplit que le vide
       actx.drawImage(viewCanvas, 0, 0);
       actx.globalCompositeOperation = 'source-over';
     }
+    if (dbg) dl(accum.toDataURL('image/png'), 'mv-accum-final.png');
     layers.push({ name: 'IA 360°: ' + prompt.slice(0, 12), canvas: accum, thumb: accum, opacity: 1, visible: true });
     _retexSelLayer = null; _retexMaskMode = 'layer';
     recomposeRetex(); renderRetexLayers();
@@ -965,13 +1096,13 @@ document.getElementById('retex-mv12').addEventListener('click', () => runMultiVi
 // ---------- Relief IA : calque de type « relief » (déplacement des vertices) ----------
 // Un calque relief est stocké dans la même liste que les calques couleur, avec :
 //   { type:'relief', name, thumb (canvas height preview), visible, amplitude (0..1, ~opacité),
-//     appliedAmp (amplitude actuellement APPLIQUÉE à la géométrie),
 //     vcount, moved:Uint32Array, dir:Float32Array(3·n), disp:Float32Array(n) [déplacement à amp=1],
+//     applied:Float32Array(n) [déplacement actuellement appliqué par sommet], w:Float32Array(n) [masque 0..1],
 //     recIdx:Uint32Array (1-anneau, pour recalcul normales), tris:Int32Array, rmin, rmax }
-// Non destructif comme un calque couleur : l'amplitude/visibilité pilotent un DELTA incrémental le long
-// des directions figées (le delta télescope -> pas de dérive ; se compose avec sculpt manuel et autres
-// calques relief, addition commutative). Comme l'opacité couleur, ces réglages NE passent PAS par Ctrl+Z ;
-// on retire un relief en supprimant son calque.
+// Non destructif comme un calque couleur : amplitude/visibilité/masque pilotent un DELTA incrémental PAR
+// SOMMET (cible = disp·amplitude·w) le long des directions figées (télescope -> pas de dérive ; se compose
+// avec le sculpt manuel). Le masque w se peint sur l'objet (calque sélectionné). Comme l'opacité couleur,
+// ces réglages NE passent PAS par Ctrl+Z ; on retire un relief en supprimant son calque.
 const RELIEF_DEFAULT_AMP = 0.4;
 
 function markRange(attr, vmin, vmax) {
@@ -1014,57 +1145,74 @@ function recomputeNormalsLocal(g, st) {
   markRange(g.attributes.normal, st.rmin, st.rmax);
 }
 
-// Applique à un calque relief le delta (newAmp01 - layer.appliedAmp) sur la géométrie COURANTE.
-// doRefit=false pendant le drag (fluide) ; true au relâcher (met à jour le BVH pour raycast/sculpt/export).
-// Garde : si la topologie a changé (subdivision/remesh in-place) le champ n'est plus applicable -> no-op.
-function applyReliefLayerDelta(mesh, layer, newAmp01, doRefit) {
+// Réapplique un calque relief à la géométrie COURANTE : pour chaque sommet, cible = disp·amplitude·masque
+// (0 si calque caché), et on applique le DELTA (cible − déjà-appliqué) le long de la direction figée.
+// Modèle par sommet -> gère amplitude ET masque (poids par sommet), télescope sans dérive, se compose
+// avec le sculpt manuel. doRefit=false pendant un drag (fluide), true au relâcher (BVH pour raycast/export).
+// Garde : topologie changée (subdivision/remesh) -> champ inapplicable -> no-op.
+function reapplyReliefLayer(mesh, layer, doRefit) {
   const g = mesh.geometry;
   if (layer.vcount !== g.attributes.position.count) return;
-  const dAmp = newAmp01 - layer.appliedAmp;
   const pos = g.attributes.position.array;
-  if (dAmp !== 0) {
-    for (let k = 0; k < layer.moved.length; k++) {
-      const v3 = layer.moved[k] * 3, s = layer.disp[k] * dAmp;
-      pos[v3] += layer.dir[k * 3] * s; pos[v3 + 1] += layer.dir[k * 3 + 1] * s; pos[v3 + 2] += layer.dir[k * 3 + 2] * s;
-    }
-    layer.appliedAmp = newAmp01;
-    recomputeNormalsLocal(g, layer);
-    if (doRefit && g.boundsTree) g.boundsTree.refit();
-    markDirty();
-  } else if (doRefit && g.boundsTree) { g.boundsTree.refit(); }
+  const amp = layer.visible ? layer.amplitude : 0;
+  const moved = layer.moved, dir = layer.dir, disp = layer.disp, applied = layer.applied, w = layer.w;
+  let any = false;
+  for (let k = 0; k < moved.length; k++) {
+    const tgt = disp[k] * amp * (w ? w[k] : 1);
+    const d = tgt - applied[k];
+    if (d === 0) continue;
+    const v3 = moved[k] * 3;
+    pos[v3] += dir[k * 3] * d; pos[v3 + 1] += dir[k * 3 + 1] * d; pos[v3 + 2] += dir[k * 3 + 2] * d;
+    applied[k] = tgt; any = true;
+  }
+  if (any) { recomputeNormalsLocal(g, layer); if (doRefit && g.boundsTree) g.boundsTree.refit(); markDirty(); }
+  else if (doRefit && g.boundsTree) g.boundsTree.refit();
 }
 
-// Drag d'amplitude throttlé en rAF (déplacement + normales locales, sans refit BVH pendant le glissement).
+// Drag d'amplitude / peinture de masque throttlé en rAF (sans refit BVH pendant le glissement).
 let _reliefSched = false, _reliefPending = null;
 function reliefSlideSchedule(mesh, layer) {
   _reliefPending = { mesh, layer };
   if (_reliefSched) return; _reliefSched = true;
-  requestAnimationFrame(() => { _reliefSched = false; const p = _reliefPending; if (p) applyReliefLayerDelta(p.mesh, p.layer, p.layer.amplitude, false); });
+  requestAnimationFrame(() => { _reliefSched = false; const p = _reliefPending; if (p) reapplyReliefLayer(p.mesh, p.layer, false); });
 }
 
 // High-pass d'une image en niveaux de gris : détail = mid-gris + (image − flou). Retire la
 // composante très basse fréquence (dégradé global / ombrage doux que l'IA bake parfois) et ne
 // garde QUE le détail local, recentré sur 128 -> évite que tout le patch gonfle (dérive).
-function highPassGray(srcImg, w, h) {
-  const full = document.createElement('canvas'); full.width = w; full.height = h;
-  const fc = full.getContext('2d'); fc.drawImage(srcImg, 0, 0, w, h);
-  const fd = fc.getImageData(0, 0, w, h).data;
-  const bw = Math.max(2, Math.round(w / 64)), bh = Math.max(2, Math.round(h / 64)); // flou = downscale fort
-  const small = document.createElement('canvas'); small.width = bw; small.height = bh;
-  small.getContext('2d').drawImage(full, 0, 0, bw, bh);
-  const blur = document.createElement('canvas'); blur.width = w; blur.height = h;
-  const bc = blur.getContext('2d'); bc.imageSmoothingEnabled = true; bc.drawImage(small, 0, 0, w, h);
-  const bd = bc.getImageData(0, 0, w, h).data;
+// Signal de relief = DIFFÉRENCE de luminance entre l'image IA et la capture d'origine, recentrée sur
+// 128 (= « pas de changement » -> relief nul). Là où l'IA a ASSOMBRI -> < 128 (creux) ; ÉCLAIRCI -> > 128
+// (bosse). Zone morte : les écarts minuscules (bruit JPEG / pixels identiques) -> 128 -> aucun relief.
+// -> on ne sculpte QUE ce que l'IA a réellement modifié, et aucun fonçage au bord (bord inchangé = 128).
+const RELIEF_GAIN = 2.0, RELIEF_DEAD = 6;
+function computeReliefDiff(aiImg, capImg, w, h) {
+  const read = (img) => { const c = document.createElement('canvas'); c.width = w; c.height = h; const x = c.getContext('2d'); x.drawImage(img, 0, 0, w, h); return x.getImageData(0, 0, w, h).data; };
+  const ad = read(aiImg), cd = read(capImg);
   const out = document.createElement('canvas'); out.width = w; out.height = h;
   const oc = out.getContext('2d'); const oi = oc.createImageData(w, h); const od = oi.data;
   for (let i = 0; i < w * h; i++) {
-    const lf = fd[i * 4] * 0.299 + fd[i * 4 + 1] * 0.587 + fd[i * 4 + 2] * 0.114;
-    const lb = bd[i * 4] * 0.299 + bd[i * 4 + 1] * 0.587 + bd[i * 4 + 2] * 0.114;
-    let d = 128 + (lf - lb); if (d < 0) d = 0; else if (d > 255) d = 255;
-    od[i * 4] = od[i * 4 + 1] = od[i * 4 + 2] = d; od[i * 4 + 3] = fd[i * 4 + 3];
+    const la = ad[i * 4] * 0.299 + ad[i * 4 + 1] * 0.587 + ad[i * 4 + 2] * 0.114;
+    const lc = cd[i * 4] * 0.299 + cd[i * 4 + 1] * 0.587 + cd[i * 4 + 2] * 0.114;
+    let d = la - lc;
+    if (Math.abs(d) < RELIEF_DEAD) d = 0;                    // quasi identique -> pas de relief
+    let v = 128 + d * RELIEF_GAIN; if (v < 0) v = 0; else if (v > 255) v = 255;
+    od[i * 4] = od[i * 4 + 1] = od[i * 4 + 2] = v; od[i * 4 + 3] = 255;
   }
   oc.putImageData(oi, 0, 0);
   return out;
+}
+
+// Construit un calque relief à partir de (image IA, capture) : diff -> découpe silhouette (intérieur) ->
+// reprojection UV -> displacement. `maskCanvas` confine (optionnel). Renvoie le calque (ou null).
+function reliefLayerFromDiff(mesh, aiImg, capImg, cam, maskCanvas, name, dbg, dl, prefix) {
+  const w = aiImg.naturalWidth || aiImg.width, h = aiImg.naturalHeight || aiImg.height;
+  const diff = computeReliefDiff(aiImg, capImg, w, h);
+  const cut = erodeMaskCanvas(capImg, 2, w, h);             // silhouette érodée : bord exclu -> pas d'artefact
+  { const c = diff.getContext('2d'); c.globalCompositeOperation = 'destination-in'; c.drawImage(cut, 0, 0); c.globalCompositeOperation = 'source-over'; }
+  if (dbg && dl) dl(diff.toDataURL('image/png'), prefix + '-diff-relief.png');
+  const heightCanvas = reprojectToUV(diff, mesh, RETEX_SIZE, cam, 4);
+  const thumb = document.createElement('canvas'); thumb.width = thumb.height = 96; thumb.getContext('2d').drawImage(diff, 0, 0, 96, 96);
+  return buildReliefLayer(mesh, heightCanvas, maskCanvas, name, thumb, cam);
 }
 
 // Échantillonnage bilinéaire (luma + alpha) d'un ImageData carré `data` (size²) en UV (0..1).
@@ -1083,10 +1231,10 @@ function sampleBilinear(data, size, u, v) {
 
 // Construit un CALQUE de relief depuis une height map (canvas UV, gris centré 128), l'applique à
 // l'amplitude par défaut et le renvoie (à pousser dans la liste des calques). Non destructif : le champ
-// est mémorisé sur le calque -> amplitude/visibilité réglables ensuite via applyReliefLayerDelta.
+// est mémorisé sur le calque -> amplitude/visibilité/masque réglables ensuite via reapplyReliefLayer.
 // `maskCanvas` (canvas UV, alpha=révélation) confine le relief à la zone peinte (optionnel).
 // Direction = normale d'origine figée ; coutures soudées (groupMembers) -> pas de fissure.
-function buildReliefLayer(mesh, heightCanvas, maskCanvas, name, thumb) {
+function buildReliefLayer(mesh, heightCanvas, maskCanvas, name, thumb, cam) {
   const g = mesh.geometry;
   const uvAttr = g.attributes.uv;
   if (!uvAttr) throw new Error('Le maillage n’a pas d’UV — impossible de projeter le relief.');
@@ -1097,7 +1245,8 @@ function buildReliefLayer(mesh, heightCanvas, maskCanvas, name, thumb) {
   const md = maskCanvas ? maskCanvas.getContext('2d').getImageData(0, 0, maskCanvas.width, maskCanvas.height).data : null;
   const msize = maskCanvas ? maskCanvas.width : 0;
   g.computeBoundingBox(); const bb = new THREE.Vector3(); g.boundingBox.getSize(bb);
-  const unit = (bb.length() || 1) * 0.15; // déplacement à amplitude=1 : jusqu'à 15% de la diagonale bbox
+  const unit = (bb.length() || 1) * 0.03; // déplacement à amplitude=1 : jusqu'à 3% de la diagonale bbox
+  // (relief = détail fin -> volontairement faible ; le curseur d'amplitude couvre 0..3% de la diagonale)
 
   // 1) Déplacement UNITAIRE (amplitude=1) par vertex (0 si non couvert / hors zone).
   const dispV = new Float32Array(N);
@@ -1133,9 +1282,12 @@ function buildReliefLayer(mesh, heightCanvas, maskCanvas, name, thumb) {
   for (let k = 0; k < moved.length; k++) { const v = moved[k], v3 = v * 3; dir[k * 3] = nor[v3]; dir[k * 3 + 1] = nor[v3 + 1]; dir[k * 3 + 2] = nor[v3 + 2]; disp[k] = dispV[v]; }
   for (let k = 0; k < recIdx.length; k++) { const v = recIdx[k]; if (v < rmin) rmin = v; if (v > rmax) rmax = v; }
 
-  // 4) Calque relief (appliedAmp=0 -> applyReliefLayerDelta l'applique à l'amplitude voulue).
-  const layer = { type: 'relief', name, thumb, visible: true, amplitude: RELIEF_DEFAULT_AMP, appliedAmp: 0, vcount: N, moved, dir, disp, recIdx, tris: Int32Array.from(triList), rmin, rmax };
-  applyReliefLayerDelta(mesh, layer, layer.amplitude, true);
+  // 4) Calque relief. applied[k] = déplacement déjà appliqué par sommet (0) ; w[k] = masque (1 = plein
+  //    relief, 0 = effacé) éditable ensuite au pinceau. reapplyReliefLayer applique l'amplitude de départ.
+  const applied = new Float32Array(moved.length);
+  const w = new Float32Array(moved.length); w.fill(1);
+  const layer = { type: 'relief', name, thumb, cam, visible: true, amplitude: RELIEF_DEFAULT_AMP, vcount: N, moved, dir, disp, applied, w, recIdx, tris: Int32Array.from(triList), rmin, rmax };
+  reapplyReliefLayer(mesh, layer, true);
   return layer;
 }
 
@@ -1148,44 +1300,35 @@ document.getElementById('retex-relief').addEventListener('click', async () => {
   if (!prompt) { setStatus('Écris un prompt (le détail de relief voulu).'); return; }
   localStorage.setItem('geminiApiKey', key);
   if (isGizmoActive()) deactivateGizmo();
-  showLoading(true, 'Relief IA (height map)…');
+  showLoading(true, 'Relief IA…');
   await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
   try {
     recomposeRetex(false);
     const capUrl = captureView(); // capture flat de l'état courant + mémorise la caméra
+    const cam = getPendingCam();
     let maskUrl = null;
-    if (_retexPendingMask && _retexPendingMask.mask) maskUrl = renderMaskView(mesh, _retexPendingMask.mask, getPendingCam(), 1024).toDataURL('image/png');
-    const outUrl = await generateNanoBanana(capUrl, prompt, key, undefined, maskUrl, NANO_HEIGHT);
+    if (_retexPendingMask && _retexPendingMask.mask) maskUrl = renderMaskView(mesh, _retexPendingMask.mask, cam, 1024).toDataURL('image/png');
+    // Génération COULEUR : l'IA dessine le détail demandé (ex. « cicatrice »). Le relief est ensuite
+    // dérivé du DIFF avec la capture (on ne garde pas la couleur ici — relief seul).
+    const outUrl = await generateNanoBanana(capUrl, prompt, key, undefined, maskUrl);
     const [aiImg, capImg] = await Promise.all([loadImageURL(outUrl), loadImageURL(capUrl)]);
-    const w = aiImg.naturalWidth || aiImg.width, h = aiImg.naturalHeight || aiImg.height;
     const dbg = document.getElementById('retex-debug').checked;
     const dl = (href, name) => { const a = document.createElement('a'); a.href = href; a.download = name; a.click(); };
-    if (dbg) { dl(capUrl, 'relief-1-capture.png'); dl(outUrl, 'relief-2-heightmap-brut.png'); }
-    // High-pass (anti-dérive) -> ne garde que le détail, centré sur mid-gris.
-    const hp = highPassGray(aiImg, w, h);
-    // Découpe à la silhouette érodée : hors objet = transparent -> reprojection ignore (relief nul).
-    const cut = erodeMaskCanvas(capImg, 2, w, h);
-    { const c = hp.getContext('2d'); c.globalCompositeOperation = 'destination-in'; c.drawImage(cut, 0, 0); c.globalCompositeOperation = 'source-over'; }
-    if (dbg) dl(hp.toDataURL('image/png'), 'relief-3-detail-highpass.png');
-    // Reproject la height map dans l'atlas UV (pad court : continuité aux coutures).
-    const heightCanvas = reprojectToUV(hp, mesh, RETEX_SIZE, getPendingCam(), 4);
-    if (dbg) dl(heightCanvas.toDataURL('image/png'), 'relief-4-height-uv.png');
+    if (dbg) { dl(capUrl, 'relief-1-capture.png'); dl(outUrl, 'relief-2-ia.png'); }
     const maskCanvas = _retexPendingMask && _retexPendingMask.mask ? _retexPendingMask.mask : null;
-    // Vignette du calque : aperçu de la height map dans le cadrage capture (mid-gris = neutre).
-    const thumb = document.createElement('canvas'); thumb.width = thumb.height = 96; thumb.getContext('2d').drawImage(hp, 0, 0, 96, 96);
-    const layer = buildReliefLayer(mesh, heightCanvas, maskCanvas, '⛰️ ' + prompt.slice(0, 12), thumb);
-    // La zone d'inpaint sert de confinement ; on la libère après usage (comme la génération couleur).
+    const layer = reliefLayerFromDiff(mesh, aiImg, capImg, cam, maskCanvas, '⛰️ ' + prompt.slice(0, 12), dbg, dl, 'relief-3');
     if (_retexPendingMask) { _retexPendingMask = null; _retexMaskMode = 'layer'; }
-    if (layer) { retexLayersOf(mesh).push(layer); }
+    if (layer) retexLayersOf(mesh).push(layer);
     recomposeRetex(); renderRetexLayers();
-    setStatus(layer ? `Calque relief ajouté (${layer.moved.length.toLocaleString('fr-FR')} vertices). Règle l’amplitude dans la liste.` : 'Relief nul (height map plate ou zone non couverte).');
+    setStatus(layer ? `Calque relief ajouté (${layer.moved.length.toLocaleString('fr-FR')} vertices). Règle l’amplitude dans la liste.` : 'Relief nul : l’IA n’a rien changé (essaie un prompt plus marqué).');
   } catch (err) { console.error(err); setStatus(`Relief IA : ${err.message}`); }
   finally { showLoading(false); }
 });
 
-// Texture + Relief (2 appels IA CHAÎNÉS) : 1) couleur (NANO_SYSTEM), 2) height map DÉRIVÉE du rendu
-// couleur (NANO_HEIGHT_DERIVE, entrée = image couleur) -> le relief se creuse exactement où la couleur
-// est peinte. Même caméra mémorisée -> les 2 reprojections sont alignées. Produit 2 calques.
+// Texture + Relief (UN seul appel IA) : génération couleur (NANO_SYSTEM) -> calque texture, PUIS le
+// relief est dérivé du DIFF entre le rendu couleur et la capture (là où l'IA a changé l'image = où
+// sculpter). Nano Banana ne sait pas produire de vraie height map -> pas de 2ᵉ appel. Même caméra
+// mémorisée -> couleur et relief alignés. Produit 2 calques (texture + relief) en 1 appel.
 document.getElementById('retex-texrelief').addEventListener('click', async () => {
   const mesh = state.targetMesh; if (!mesh) { setStatus('Aucun objet.'); return; }
   if (!mesh.geometry.attributes.uv) { setStatus('Le maillage n’a pas d’UV (retexture requise).'); return; }
@@ -1195,7 +1338,7 @@ document.getElementById('retex-texrelief').addEventListener('click', async () =>
   if (!prompt) { setStatus('Écris un prompt (ex. « cicatrice sur la joue »).'); return; }
   localStorage.setItem('geminiApiKey', key);
   if (isGizmoActive()) deactivateGizmo();
-  showLoading(true, 'Texture + Relief · 1/2 couleur…');
+  showLoading(true, 'Texture + Relief…');
   await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
   try {
     recomposeRetex(false);
@@ -1207,40 +1350,28 @@ document.getElementById('retex-texrelief').addEventListener('click', async () =>
     const dl = (href, name) => { const a = document.createElement('a'); a.href = href; a.download = name; a.click(); };
     const layers = retexLayersOf(mesh);
 
-    // --- Appel 1 : COULEUR (inpaint si zone peinte) -> calque texture ---
+    // Appel COULEUR (inpaint si zone peinte)
     const colorUrl = await generateNanoBanana(capUrl, prompt, key, undefined, maskUrl);
     const [colorImg, capImg] = await Promise.all([loadImageURL(colorUrl), loadImageURL(capUrl)]);
     const w = colorImg.naturalWidth || colorImg.width, h = colorImg.naturalHeight || colorImg.height;
     if (dbg) { dl(capUrl, 'tr-1-capture.png'); if (maskUrl) dl(maskUrl, 'tr-1b-mask.png'); dl(colorUrl, 'tr-2-couleur.png'); }
+
+    // Calque TEXTURE : détourage + reprojection
     const cut = erodeMaskCanvas(capImg, 2, w, h);
     const colorDet = document.createElement('canvas'); colorDet.width = w; colorDet.height = h;
     { const c = colorDet.getContext('2d'); c.drawImage(colorImg, 0, 0); c.globalCompositeOperation = 'destination-in'; c.drawImage(cut, 0, 0); c.globalCompositeOperation = 'source-over'; }
     const colorCanvas = reprojectToUV(colorDet, mesh, RETEX_SIZE, cam);
     const colorLayer = { name: 'IA: ' + prompt.slice(0, 14), canvas: colorCanvas, thumb: colorDet, cam, opacity: 1, visible: true };
-    if (_retexPendingMask && _retexPendingMask.mask) { colorLayer.mask = _retexPendingMask.mask; colorLayer._maskRT = _retexPendingMask._maskRT; }
+    const pendingMask = (_retexPendingMask && _retexPendingMask.mask) ? _retexPendingMask.mask : null;
+    if (pendingMask) { colorLayer.mask = pendingMask; colorLayer._maskRT = _retexPendingMask._maskRT; }
     layers.push(colorLayer);
-    recomposeRetex(); renderRetexLayers();  // affiche la couleur pendant le 2ᵉ appel
 
-    // --- Appel 2 : RELIEF dérivé de l'image couleur -> calque relief ---
-    showLoading(true, 'Texture + Relief · 2/2 relief…');
-    const heightUrl = await generateNanoBanana(colorUrl, prompt, key, undefined, null, NANO_HEIGHT_DERIVE);
-    const heightImg = await loadImageURL(heightUrl);
-    const hw = heightImg.naturalWidth || heightImg.width, hh = heightImg.naturalHeight || heightImg.height;
-    if (dbg) dl(heightUrl, 'tr-3-height-brut.png');
-    const hp = highPassGray(heightImg, hw, hh);
-    const cut2 = erodeMaskCanvas(capImg, 2, hw, hh);
-    { const c = hp.getContext('2d'); c.globalCompositeOperation = 'destination-in'; c.drawImage(cut2, 0, 0); c.globalCompositeOperation = 'source-over'; }
-    if (dbg) dl(hp.toDataURL('image/png'), 'tr-4-height-highpass.png');
-    const heightCanvas = reprojectToUV(hp, mesh, RETEX_SIZE, cam, 4);
-    if (dbg) dl(heightCanvas.toDataURL('image/png'), 'tr-5-height-uv.png');
-    // Confinement du relief : zone d'inpaint si peinte, sinon le masque du calque couleur (même région).
-    const maskCanvas = (_retexPendingMask && _retexPendingMask.mask) ? _retexPendingMask.mask : (colorLayer.mask || null);
-    const thumb = document.createElement('canvas'); thumb.width = thumb.height = 96; thumb.getContext('2d').drawImage(hp, 0, 0, 96, 96);
-    const reliefLayer = buildReliefLayer(mesh, heightCanvas, maskCanvas, '⛰️ ' + prompt.slice(0, 12), thumb);
+    // Calque RELIEF : dérivé du DIFF couleur↔capture (même confinement que la couleur)
+    const reliefLayer = reliefLayerFromDiff(mesh, colorImg, capImg, cam, pendingMask, '⛰️ ' + prompt.slice(0, 12), dbg, dl, 'tr-3');
     if (reliefLayer) layers.push(reliefLayer);
     if (_retexPendingMask) { _retexPendingMask = null; _retexMaskMode = 'layer'; }
     recomposeRetex(); renderRetexLayers();
-    setStatus(reliefLayer ? `Texture + relief ajoutés (relief : ${reliefLayer.moved.length.toLocaleString('fr-FR')} vertices).` : 'Texture ajoutée ; relief nul (rien de saillant détecté).');
+    setStatus(reliefLayer ? `Texture + relief ajoutés (relief : ${reliefLayer.moved.length.toLocaleString('fr-FR')} vertices).` : 'Texture ajoutée ; relief nul (l’IA n’a rien changé géométriquement).');
   } catch (err) { console.error(err); setStatus(`Texture + Relief : ${err.message}`); }
   finally { showLoading(false); }
 });
@@ -1481,15 +1612,32 @@ toolButtons.forEach((btn) => {
   btn.addEventListener('click', () => {
     state.params.tool = btn.dataset.tool;
     toolButtons.forEach((b) => b.classList.toggle('active', b === btn));
-    const t = state.params.tool, isGizmo = t === 'gizmo', isMask = t === 'mask', isRetex = t === 'retexture';
+    const t = state.params.tool, isGizmo = t === 'gizmo', isMask = t === 'mask', isRetex = t === 'retexture', isVP = t === 'vertexpaint';
     applyToolVisibility(t); // n'affiche que les options liées à l'outil sélectionné
     if (t === 'split' || t === 'other' || isGizmo) hideBrushCursor(); // retexture garde le cercle d'influence
     if (isGizmo) activateGizmo(state.targetMesh); else deactivateGizmo();
     document.getElementById('gizmo-hint').style.display = isGizmo ? '' : 'none';
     document.getElementById('mask-panel').style.display = isMask ? 'flex' : 'none';
     document.getElementById('retexture-panel').style.display = isRetex ? 'flex' : 'none';
+    document.getElementById('vertexpaint-panel').style.display = isVP ? 'flex' : 'none';
+    if (!isVP) dom.style.cursor = ''; // curseur pipette éventuel réinitialisé hors Vertex Paint
+    if (isVP && state.targetMesh) {
+      const mVP = state.targetMesh;
+      if (!mVP.userData._vpPainted) {
+        // 1ʳᵉ entrée (pas encore de couleurs) : pipette + affichage TEXTURE (pour prélever sur la texture).
+        _vpPipette = true;
+        if (state.params.displayMode !== 'texture') setDisplayMode('texture');
+      } else {
+        // déjà peint : mode peinture + affichage vertex color à plat.
+        _vpPipette = false; ensureColorAttr(mVP);
+        if (state.params.displayMode !== 'vcflat') setDisplayMode('vcflat');
+      }
+      updateVPModeUI(); renderVPPalette();
+    }
     document.getElementById('left-layers-section').style.display = isRetex ? 'flex' : 'none'; // liste calques (panneau gauche)
+    if (isRetex && state.params.displayMode !== 'texture') setDisplayMode('texture'); // Retexture -> affichage texture
     if (!isRetex && _retexMaskEdit) { _retexMaskEdit = false; if (state.targetMesh) recomposeRetex(); } // quitte l'édition N&B -> restaure la couleur
+    if (!isRetex && _reliefMaskEdit) exitReliefMaskEdit(state.targetMesh); // idem pour le masque relief
     refreshBoolTargets(); // section booléens visible seulement dans l'outil « Autres »
     updateCaptureFrame(isRetex);
     updateTexturePreview(isRetex);
@@ -1503,6 +1651,131 @@ toolButtons.forEach((btn) => {
   });
 }); // <- fin du toolButtons.forEach (sinon les listeners ci-dessous seraient liés 1×/bouton)
 applyToolVisibility(state.params.tool || 'draw'); // état initial : n'affiche que les options de l'outil courant
+
+// ---------- Vertex Paint : palette (pipette) + apply-from-texture + export 3MF MMU ----------
+let _vpSel = 0;          // index de la couleur active dans la palette du mesh
+let _vpPipette = false;  // mode pipette : le clic prélève au lieu de peindre
+
+// Curseur « pipette » (SVG inline) pointe cyan, hotspot sur la pointe bas-gauche.
+const PIPETTE_CURSOR = "url(\"data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='%2322d3ee' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='m19 4-1-1a2 2 0 0 0-3 0l-8 8 4 4 8-8a2 2 0 0 0 0-3z'/><path d='m11 9-6 6'/><path d='m5 15-2 4 4-2'/></svg>\") 2 22, crosshair";
+// Indicateur visuel du mode courant (pipette vs peinture) : bouton pipette surligné + libellé + curseur souris.
+function updateVPModeUI() {
+  const pip = document.getElementById('vp-pipette');
+  if (pip) { pip.classList.toggle('active', _vpPipette); pip.textContent = _vpPipette ? '🎯 Pipette ●' : '🎯 Pipette'; }
+  dom.style.cursor = (state.params.tool === 'vertexpaint' && _vpPipette) ? PIPETTE_CURSOR : '';
+  const md = document.getElementById('vp-mode');
+  if (md) {
+    md.textContent = _vpPipette ? '🎯 Mode PIPETTE — clique sur le modèle pour prélever une couleur.' : '🖌️ Mode PEINTURE — clique pour peindre la couleur active.';
+    md.style.background = _vpPipette ? '#0e3a42' : '#1a2e17';
+    md.style.color = _vpPipette ? '#22d3ee' : '#9be29b';
+  }
+}
+
+function renderVPPalette() {
+  const box = document.getElementById('vp-palette'); if (!box) return; box.innerHTML = '';
+  const mesh = state.targetMesh;
+  if (!mesh) { box.innerHTML = '<div style="font-size:11px;color:#888;">Charge un objet.</div>'; return; }
+  const pal = getPalette(mesh);
+  if (!pal.length) { box.innerHTML = '<div style="font-size:11px;color:#888;">Palette vide — 🎯 pipette sur le modèle, ou « + ».</div>'; return; }
+  if (_vpSel >= pal.length) _vpSel = pal.length - 1;
+  pal.forEach((c, i) => {
+    const row = document.createElement('div'); row.className = 'obj-row' + (i === _vpSel ? ' active' : '');
+    const slot = document.createElement('span'); slot.textContent = String(i + 1); slot.title = 'Slot MMU'; slot.style.cssText = 'width:16px;text-align:center;font-size:11px;color:#9a9ac0;';
+    const sw = document.createElement('input'); sw.type = 'color'; sw.value = rgbToHex(c.r, c.g, c.b); sw.title = 'Modifier la couleur'; sw.style.cssText = 'width:28px;height:22px;padding:0;border:none;background:none;cursor:pointer;';
+    // Modifier une couleur de palette recolore TOUS les vertex qui portaient l'ancienne couleur.
+    sw.oninput = () => {
+      const rgb = hexToRgb(sw.value);
+      const mesh = state.targetMesh, col = mesh && mesh.geometry.attributes.color;
+      if (col) {
+        const arr = col.array, oR = c.r, oG = c.g, oB = c.b, eps = 0.6 / 255;
+        for (let p = 0; p < arr.length; p += 3) {
+          if (Math.abs(arr[p] - oR) < eps && Math.abs(arr[p + 1] - oG) < eps && Math.abs(arr[p + 2] - oB) < eps) { arr[p] = rgb.r; arr[p + 1] = rgb.g; arr[p + 2] = rgb.b; }
+        }
+        col.needsUpdate = true; markDirty();
+      }
+      c.r = rgb.r; c.g = rgb.g; c.b = rgb.b; name.textContent = sw.value; // c mis à jour -> le prochain input télescope
+    };
+    const name = document.createElement('span'); name.textContent = rgbToHex(c.r, c.g, c.b); name.className = 'obj-name'; name.style.cssText = 'font-size:11px;cursor:pointer;'; name.onclick = () => { _vpSel = i; renderVPPalette(); };
+    const up = document.createElement('button'); up.className = 'obj-btn'; up.textContent = '↑'; up.title = 'Monter (ordre des slots)';
+    up.onclick = () => { if (i > 0) { const t = pal[i - 1]; pal[i - 1] = pal[i]; pal[i] = t; if (_vpSel === i) _vpSel = i - 1; else if (_vpSel === i - 1) _vpSel = i; renderVPPalette(); } };
+    const del = document.createElement('button'); del.className = 'obj-btn'; del.textContent = '🗑'; del.title = 'Supprimer';
+    del.onclick = () => { pal.splice(i, 1); if (_vpSel >= pal.length) _vpSel = Math.max(0, pal.length - 1); renderVPPalette(); };
+    row.append(slot, sw, name, up, del);
+    box.appendChild(row);
+  });
+}
+
+function vpPick(hit) {
+  const mesh = state.targetMesh; if (!mesh) return;
+  const c = eyedropSample(mesh, hit);
+  const pal = getPalette(mesh); pal.push({ r: c.r, g: c.g, b: c.b }); _vpSel = pal.length - 1;
+  renderVPPalette();
+  setStatus(`Couleur prélevée ${rgbToHex(c.r, c.g, c.b)} → slot ${pal.length}.`);
+}
+
+// Maintien « i » : pique la couleur sous le curseur et SÉLECTIONNE la couleur de palette la plus proche
+// (bascule la couleur active, sans en ajouter). En peinture, la surface montre les couleurs peintes
+// (vcflat) -> on échantillonne la couleur du sommet, sinon la texture.
+function vpPickSelect(hit) {
+  const mesh = state.targetMesh; if (!mesh) return;
+  const pal = getPalette(mesh); if (!pal.length) { setStatus('Palette vide.'); return; }
+  const col = mesh.geometry.attributes.color;
+  let c;
+  if (col && hit && hit.face) { const v3 = hit.face.a * 3; c = { r: col.array[v3], g: col.array[v3 + 1], b: col.array[v3 + 2] }; }
+  else c = eyedropSample(mesh, hit);
+  const idx = nearestPaletteIndex(c.r, c.g, c.b, pal);
+  if (idx >= 0 && idx !== _vpSel) { _vpSel = idx; renderVPPalette(); setStatus(`Couleur active : slot ${idx + 1} (${rgbToHex(pal[idx].r, pal[idx].g, pal[idx].b)}).`); }
+}
+let _vpKeyPick = false; // « i » maintenu : pipette de sélection continue (appui + déplacement)
+window.addEventListener('keydown', (e) => {
+  if ((e.key !== 'i' && e.key !== 'I') || e.repeat) return;
+  if (state.params.tool !== 'vertexpaint' || _vpPipette) return;
+  const tag = (e.target && e.target.tagName) || ''; if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+  _vpKeyPick = true; dom.style.cursor = PIPETTE_CURSOR; hideBrushCursor();
+  const hit = raycastSurface(); if (hit) vpPickSelect(hit); // pique tout de suite à la position courante
+});
+window.addEventListener('keyup', (e) => {
+  if (e.key !== 'i' && e.key !== 'I' || !_vpKeyPick) return;
+  _vpKeyPick = false; dom.style.cursor = _vpPipette ? PIPETTE_CURSOR : '';
+});
+
+{
+  const pipBtn = document.getElementById('vp-pipette');
+  // Bascule pipette : la pipette va de pair avec l'affichage TEXTURE (voir les couleurs à prélever) ;
+  // la peinture avec l'affichage VERTEX COLOR à plat. On bascule donc aussi le mode d'affichage.
+  if (pipBtn) pipBtn.addEventListener('click', () => {
+    const mesh = state.targetMesh;
+    _vpPipette = !_vpPipette;
+    if (_vpPipette) { if (state.params.displayMode !== 'texture') setDisplayMode('texture'); }
+    else if (mesh) { ensureColorAttr(mesh); if (state.params.displayMode !== 'vcflat') setDisplayMode('vcflat'); }
+    updateVPModeUI();
+  });
+  const addBtn = document.getElementById('vp-add');
+  if (addBtn) addBtn.addEventListener('click', () => { const mesh = state.targetMesh; if (!mesh) return; getPalette(mesh).push({ r: 0.8, g: 0.8, b: 0.8 }); _vpSel = getPalette(mesh).length - 1; renderVPPalette(); });
+  const applyBtn = document.getElementById('vp-apply');
+  if (applyBtn) applyBtn.addEventListener('click', () => {
+    const mesh = state.targetMesh; if (!mesh) { setStatus('Aucun objet.'); return; }
+    const n = applyPaletteFromTexture(mesh);
+    if (n < 0) { setStatus('Requiert : palette non vide + une texture + des UV.'); return; }
+    mesh.userData._vpPainted = true;                 // désormais peint -> ré-entrée en mode peinture
+    _vpPipette = false;                              // sortie du mode pipette
+    setDisplayMode('vcflat');                        // affichage vertex color à plat
+    updateVPModeUI(); markDirty();
+    setStatus(`Couleurs appliquées depuis la texture (${n.toLocaleString('fr-FR')} sommets quantifiés). Mode peinture.`);
+  });
+  const expBtn = document.getElementById('vp-export');
+  if (expBtn) expBtn.addEventListener('click', async () => {
+    const mesh = state.targetMesh; if (!mesh) { setStatus('Aucun objet.'); return; }
+    try {
+      showLoading(true, 'Export 3MF (MMU)…');
+      await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      const blob = await buildVertexPaint3MF(mesh);
+      const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = (mesh.name || 'vertexpaint') + '.3mf'; a.click(); URL.revokeObjectURL(a.href);
+      setStatus('Export 3MF (segmentation MMU) téléchargé.');
+    } catch (err) { console.error(err); setStatus(`Export 3MF : ${err.message}`); }
+    finally { showLoading(false); }
+  });
+}
 
 // Panneau masque : inverser / effacer / flou
 document.getElementById('mask-invert').addEventListener('click', () => {

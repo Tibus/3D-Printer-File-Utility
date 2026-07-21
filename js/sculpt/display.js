@@ -53,10 +53,48 @@ function texturedMatcapMat(baseMat) {
   return m;
 }
 
+// Matcap × vertex color À PLAT (pour le Vertex Paint FDM). Couleur constante PAR FACE (pas de fade) :
+//  - normale par face via dérivées d'écran (dFdx/dFdy) -> éclairage matcap uniforme sur la face ;
+//  - couleur `flat` (pas d'interpolation Gouraud entre sommets) -> frontières nettes sur maillage indexé.
+// RawShaderMaterial GLSL3 : Three fournit position/color/modelViewMatrix/projectionMatrix.
+let _vcFlatMat = null;
+function vcFlatMat() {
+  if (_vcFlatMat) return _vcFlatMat;
+  _vcFlatMat = new THREE.RawShaderMaterial({
+    glslVersion: THREE.GLSL3,
+    side: THREE.DoubleSide,
+    uniforms: { matcap: { value: matcapTexture() } },
+    vertexShader: `
+      precision highp float;
+      in vec3 position; in vec3 color;
+      uniform mat4 modelViewMatrix; uniform mat4 projectionMatrix;
+      out vec3 vView; flat out vec3 vColor;
+      void main() { vColor = color; vec4 mv = modelViewMatrix * vec4(position, 1.0); vView = mv.xyz; gl_Position = projectionMatrix * mv; }
+    `,
+    fragmentShader: `
+      precision highp float;
+      uniform sampler2D matcap;
+      in vec3 vView; flat in vec3 vColor;
+      out vec4 fragColor;
+      void main() {
+        vec3 n = normalize(cross(dFdx(vView), dFdy(vView)));   // normale de face (espace vue)
+        if (dot(n, vView) > 0.0) n = -n;                       // orientée vers la caméra
+        vec3 e = normalize(vView);
+        vec3 r = reflect(e, n);
+        float m = 2.0 * sqrt(r.x * r.x + r.y * r.y + (r.z + 1.0) * (r.z + 1.0));
+        vec2 uv = r.xy / m + 0.5;
+        fragColor = vec4(texture(matcap, uv).rgb * vColor, 1.0);
+      }
+    `,
+  });
+  return _vcFlatMat;
+}
+
 // Matériau à afficher pour un matériau de base + un mode.
 export function displayMaterial(baseMat, mode) {
   if (mode === 'matcap') return matcapMat();
   if (mode === 'clay') return clayMat();
+  if (mode === 'vcflat') return vcFlatMat(); // matcap × couleur par sommet, à plat (Vertex Paint)
   return texturedMatcapMat(baseMat); // 'texture' = texture éclairée par le matcap
 }
 

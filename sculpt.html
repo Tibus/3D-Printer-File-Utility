@@ -93,6 +93,9 @@
     <button class="tool-btn" data-tool="retexture" title="Retexturing : compositing de la texture couleur (calques importés / reprojetés)">
       <span class="tool-emoji">🎨</span> Retexture
     </button>
+    <button class="tool-btn" data-tool="vertexpaint" title="FDM export : peindre des couleurs par sommet depuis une palette, puis exporter en 3MF multicouleur (MMU)">
+      <span class="tool-emoji">🖨️</span> FDM export
+    </button>
     <button class="tool-btn" data-tool="other" title="Opérations sur le maillage (remesh, réparer, décimer, évider, orienter…)">
       <span class="tool-emoji">🧰</span> Autres
     </button>
@@ -148,6 +151,24 @@
     <input type="file" id="retex-file" accept="image/*" style="display:none">
   </div>
 
+  <!-- Vertex Paint (FDM) : palette de couleurs peintes par sommet + export 3MF multicouleur (MMU) -->
+  <div id="vertexpaint-panel" style="display:none; flex-direction:column; gap:10px;">
+    <div style="font-size:11.5px; line-height:1.4; color:#9a9ac0;">
+      Peins des couleurs par sommet (couleur exacte, sans dégradé). Choisis la couleur active dans la palette ; clic gauche = peindre, la taille de brosse règle le rayon.
+    </div>
+    <div id="vp-mode" style="font-size:11.5px; font-weight:600; line-height:1.3; padding:6px 8px; border-radius:6px; background:#0e3a42; color:#22d3ee;">🎯 Mode PIPETTE — clique sur le modèle pour prélever une couleur.</div>
+    <div style="display:flex; gap:6px;">
+      <button id="vp-pipette" class="control-btn" style="flex:1;" title="Basculer la pipette : prélever une couleur en cliquant sur le modèle (affichage texture). Off = peinture (affichage vertex color).">🎯 Pipette</button>
+      <button id="vp-add" class="control-btn" style="flex:1;" title="Ajouter une couleur (gris) à modifier">＋ Couleur</button>
+    </div>
+    <div class="obj-section">
+      <div class="obj-title">Palette (slot MMU = ordre)</div>
+      <div id="vp-palette"></div>
+    </div>
+    <button id="vp-apply" class="control-btn" title="Remplit les couleurs par sommet en échantillonnant la texture et en quantifiant à la palette (affectation dure)">🎨 Appliquer depuis la texture</button>
+    <button id="vp-export" class="control-btn" title="Exporter en 3MF multicouleur (segmentation MMU PrusaSlicer/Bambu), 1 slot filament par couleur de palette">💾 Exporter 3MF (MMU)</button>
+  </div>
+
   <div id="gizmo-hint" style="display:none; font-size:11.5px; line-height:1.5; color:#9a9ac0;">
     Flèches = déplacer · anneaux = tourner · cubes = échelle.<br>
     <strong>Alt</strong> maintenu : déplacer le pivot seul.
@@ -158,7 +179,7 @@
     <button id="redo-btn" class="control-btn" title="Rétablir (Ctrl/Cmd+Maj+Z)" disabled>↷ Rétablir</button>
   </div>
 
-  <div class="param" data-tools="sculpt mask retexture">
+  <div class="param" data-tools="sculpt mask retexture vertexpaint">
     <label>
       <span class="param-label">Taille</span>
       <input type="range" id="size-range" min="0.02" max="0.6" value="0.12" step="0.005">
@@ -222,10 +243,11 @@
   <div class="param">
     <label>
       <span class="param-label">Affichage</span>
-      <select id="display-mode" title="Texture : matériau réel. Matcap : rendu de forme sans texture. Uni : argile plate.">
+      <select id="display-mode" title="Texture : matériau réel. Matcap : rendu de forme sans texture. Uni : argile plate. Vertex color : couleurs peintes, à plat (Vertex Paint).">
         <option value="texture">Texture</option>
         <option value="matcap">Matcap</option>
         <option value="clay">Uni</option>
+        <option value="vcflat">Vertex color (à plat)</option>
       </select>
     </label>
   </div>
