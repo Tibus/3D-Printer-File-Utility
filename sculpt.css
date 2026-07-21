@@ -330,6 +330,42 @@ body.dragging {
     cursor: default;
 }
 
+/* Modes Bones (Pose / Weight paint) : groupe façon boutons radio -> on voit le mode actif */
+#bones-pose,
+#bones-weight {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 7px;
+    background: #33334f;
+}
+#bones-pose::before,
+#bones-weight::before {
+    content: '';
+    flex: 0 0 auto;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    border: 2px solid #8888a8;
+    background: transparent;
+    transition: border-color 0.15s, background 0.15s;
+}
+#bones-pose:hover,
+#bones-weight:hover {
+    background: #3d3d60;
+}
+#bones-pose.active,
+#bones-weight.active {
+    background: #6c8cff;
+    color: #fff;
+}
+#bones-pose.active::before,
+#bones-weight.active::before {
+    border-color: #fff;
+    background: #fff;
+    box-shadow: inset 0 0 0 2px #6c8cff;
+}
+
 .undo-row {
     display: grid;
     grid-template-columns: 1fr 1fr;
