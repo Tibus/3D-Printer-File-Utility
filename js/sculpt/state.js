@@ -53,6 +53,7 @@ export const state = {
     symmetry: { x: false, y: false, z: false }, // axes de symétrie actifs
     symmetrySpace: 'local',   // 'local' (suit la rotation de l'objet) | 'world' ; miroir autour de l'origine de l'objet
     symmetryShowPlanes: true, // afficher les plans de symétrie
+    splitConnectors: false,   // ajouter des tenons/mortaises à la découpe
     displayHelper: false,     // afficher le wireframe / bvh helper
     falloffHardness: 0.5,     // dureté du bord (0 = très doux, 1 = net)
     cutDetail: 10,            // finesse du retopo du cap (×10 cellules sur la diagonale)

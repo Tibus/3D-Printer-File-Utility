@@ -4,6 +4,8 @@ import * as THREE from 'three';
 import { state } from './state.js';
 import { initScene } from './scene.js';
 import { symmetryPoints, initSymmetryHelper, updateSymmetryHelper, updateSymmetryCursor, enterSymEdit, exitSymEdit, isSymEditing, symEditMesh, setSymGizmoMode, resetSymFrame } from './symmetry.js';
+import { unwrapUVs } from './unwrap.js';
+import { addConnectors } from './connectors.js';
 import {
   loadModelFromFile, subdivideTarget, separateComponents, newScene,
   createObject, setActiveObject, setOnObjectsChanged,
@@ -203,6 +205,20 @@ function finishLasso(e) {
   lassoPts = [];
 }
 
+// Ajoute des connecteurs (tenons/mortaises) aux 2 pièces d'un split si l'option est cochée.
+// `res` porte res.inside/res.outside (géométries locales) ; `refGeom` = géométrie d'origine (pour la taille).
+async function maybeAddConnectors(res, refGeom) {
+  if (!state.params.splitConnectors || !res || !res.inside || !res.outside) return;
+  refGeom.computeBoundingBox();
+  const bs = refGeom.boundingBox.getSize(new THREE.Vector3());
+  const size = Math.max(bs.x, bs.y, bs.z) || 2;
+  try {
+    const conn = await addConnectors(res.inside, res.outside, { size });
+    if (conn) { res.inside = conn.inside; res.outside = conn.outside; }
+    else setStatus('Connecteurs non ajoutés (interface non détectée ou maillage non-watertight).');
+  } catch (e) { console.warn('[connectors]', e); }
+}
+
 function performSplit() {
   const mesh = state.targetMesh;
   if (!mesh) return;
@@ -232,7 +248,7 @@ function performSplit() {
     })))
     : lassoSplitAsync(g, poly, cam, mw, w, h, det, setProgress);
   run
-    .then((res) => {
+    .then(async (res) => {
       if (res && res.fallback) { setStatus('Découpe impossible sur ce maillage (essaie « Voxel remesh »).'); return; }
       if (!res) { setStatus(csg ? 'Rien séparé (le lasso ne traverse pas l’objet ?).' : 'Le lasso n’a rien séparé.'); return; }
       // Cap dégradé (mode rapide uniquement) : refuse pour ne PAS détruire le maillage
@@ -241,6 +257,7 @@ function performSplit() {
         setStatus('Découpe impossible ici : maillage trop peu dense sous le lasso. Passe en mode « Précise (booléen) », clique « Subdiviser », ou agrandis le tracé.');
         return;
       }
+      await maybeAddConnectors(res, g); // tenons/mortaises si l'option est cochée
       // DoubleSide : l'orientation des parois n'est pas garantie.
       const matIn = baseMatOf(mesh).clone(); matIn.side = THREE.DoubleSide;
       const matOut = baseMatOf(mesh).clone(); matOut.side = THREE.DoubleSide;
@@ -384,20 +401,18 @@ function renderObjectList() {
   updateToolAvailability();
 }
 
-// Désactive l'outil Retexture si l'objet actif n'a pas d'UV (le retexturing projette sur les UV).
-function updateToolAvailability() {
+// Le retexturing exige des UV. On laisse ENTRER dans l'outil, mais tant qu'il n'y a pas d'UV : seul le
+// bouton « Déplier les UV » du panneau est actif, les autres actions sont désactivées + un message s'affiche.
+function updateToolAvailability() { updateRetexUVState(); }
+function updateRetexUVState() {
   const m = state.targetMesh;
   const hasUV = !!(m && m.geometry && m.geometry.attributes && m.geometry.attributes.uv);
-  const btn = document.querySelector('.tool-btn[data-tool="retexture"]');
-  if (btn) {
-    btn.dataset.noUv = hasUV ? '' : '1'; // gardé cliquable (pour expliquer au clic), juste grisé
-    btn.style.opacity = hasUV ? '' : '0.4';
-    btn.style.cursor = hasUV ? '' : 'not-allowed';
-    btn.title = hasUV ? 'Retexturing : compositing de la texture couleur (calques importés / reprojetés)'
-      : 'Retexturing indisponible : l’objet sélectionné ne contient pas de développement UV';
-  }
-  // Si on était en Retexture sur un objet sans UV, on replie sur l'outil Draw.
-  if (!hasUV && state.params.tool === 'retexture') { const d = document.querySelector('.tool-btn[data-tool="draw"]'); if (d) d.click(); }
+  const need = document.getElementById('retex-needuv');
+  if (need) need.style.display = hasUV ? 'none' : 'block';
+  // Active/désactive toutes les actions retexture SAUF le dépliage UV.
+  document.querySelectorAll('#retexture-panel [data-needuv]').forEach((el) => {
+    el.disabled = !hasUV; el.style.opacity = hasUV ? '' : '0.4'; el.style.pointerEvents = hasUV ? '' : 'none';
+  });
 }
 
 // Peuple le sélecteur de cible booléenne (tous les objets sauf l'actif) et n'affiche la section
@@ -695,7 +710,22 @@ function updateTexturePreview(show) {
   ctx.clearRect(0, 0, cv.width, cv.height);
   if (src) { try { ctx.drawImage(src, 0, 0, cv.width, cv.height); } catch (_) { ctx.fillStyle = '#333'; ctx.fillRect(0, 0, cv.width, cv.height); } }
   else { ctx.fillStyle = '#333'; ctx.fillRect(0, 0, cv.width, cv.height); }
+  drawUVWireframe(ctx, mesh.geometry, cv.width, cv.height); // superpose le développement UV
   wrap.style.display = 'block';
+}
+// Trace le fil-de-fer des UV (arêtes des triangles) sur l'aperçu débug. Échantillonne si trop de triangles.
+function drawUVWireframe(ctx, geom, w, h) {
+  const uv = geom.attributes.uv; if (!uv) return;
+  const idx = geom.index ? geom.index.array : null;
+  const triCount = idx ? idx.length / 3 : uv.count / 3;
+  const step = Math.max(1, Math.ceil(triCount / 60000)); // cap le nb de tris dessinés
+  ctx.strokeStyle = 'rgba(34,211,238,0.55)'; ctx.lineWidth = 0.5; ctx.beginPath();
+  for (let t = 0; t < triCount; t += step) {
+    const a = idx ? idx[t * 3] : t * 3, b = idx ? idx[t * 3 + 1] : t * 3 + 1, c = idx ? idx[t * 3 + 2] : t * 3 + 2;
+    const ax = uv.getX(a) * w, ay = (1 - uv.getY(a)) * h, bx = uv.getX(b) * w, by = (1 - uv.getY(b)) * h, cx = uv.getX(c) * w, cy = (1 - uv.getY(c)) * h;
+    ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.lineTo(cx, cy); ctx.lineTo(ax, ay);
+  }
+  ctx.stroke();
 }
 // Copie une image/canvas source dans un canvas carré RETEX_SIZE (pour en faire un calque).
 function toRetexCanvas(src) {
@@ -1030,8 +1060,9 @@ function retexScheduleFrame() { if (!_retexScheduled) { _retexScheduled = true; 
 
 dom.addEventListener('pointerdown', (e) => {
   if (state.params.tool !== 'retexture' || e.button !== 0 || isRenderMode()) return;
-  if (_retexMaskMode === 'layer' && !_retexSelLayer) return; // rien à peindre
   if (!state.targetMesh || !state.targetMesh.visible) return;
+  if (!state.targetMesh.geometry.attributes.uv) return; // pas d'UV -> retexturing indisponible (déplie d'abord)
+  if (_retexMaskMode === 'layer' && !_retexSelLayer) return; // rien à peindre
   setMouseFromEvent(e);
   const hit = raycastSurface();
   if (!hit) return;
@@ -1128,7 +1159,20 @@ async function multiViewTexture(mesh, prompt, key, nViews) {
   const center = bs.center.clone().applyMatrix4(mesh.matrixWorld);
   const rel = savePos.clone().sub(center); const relLen = rel.length() || 1;
   const dist = Math.max(relLen, bs.radius * 2.2);
-  const el = Math.asin(THREE.MathUtils.clamp(rel.y / relLen, -0.999, 0.999)); // élévation conservée
+  // Poses de caméra : 6 vues = FACES DU CUBE (front/back/droite/gauche/dessus/dessous) ; sinon orbite 360°.
+  const CUBE = [
+    { d: [0, 0, 1], up: [0, 1, 0] }, { d: [0, 0, -1], up: [0, 1, 0] },   // avant / arrière
+    { d: [1, 0, 0], up: [0, 1, 0] }, { d: [-1, 0, 0], up: [0, 1, 0] },   // droite / gauche
+    { d: [0, 1, 0], up: [0, 0, -1] }, { d: [0, -1, 0], up: [0, 0, 1] },  // dessus / dessous
+  ];
+  const poses = [];
+  if (nViews === 6) {
+    for (const v of CUBE) poses.push({ pos: center.clone().addScaledVector(new THREE.Vector3(v.d[0], v.d[1], v.d[2]), dist), up: new THREE.Vector3(v.up[0], v.up[1], v.up[2]) });
+  } else {
+    const el = Math.asin(THREE.MathUtils.clamp(rel.y / relLen, -0.999, 0.999)); const ce = Math.cos(el), se = Math.sin(el);
+    for (let i = 0; i < nViews; i++) { const az = (i / nViews) * Math.PI * 2; poses.push({ pos: new THREE.Vector3(center.x + dist * Math.cos(az) * ce, center.y + dist * se, center.z + dist * Math.sin(az) * ce), up: new THREE.Vector3(0, 1, 0) }); }
+  }
+  nViews = poses.length;
   const layers = retexLayersOf(mesh);
   const baseComposite = compositeLayers(mesh.userData._retexBase, layers, RETEX_SIZE); // fond des captures
   const accum = document.createElement('canvas'); accum.width = accum.height = RETEX_SIZE; const actx = accum.getContext('2d');
@@ -1140,9 +1184,7 @@ async function multiViewTexture(mesh, prompt, key, nViews) {
     for (let i = 0; i < nViews; i++) {
       showLoading(true, `Multi-view ${i + 1}/${nViews}…`);
       const vv = String(i + 1).padStart(2, '0'); // préfixe debug par vue
-      const az = (i / nViews) * Math.PI * 2, ce = Math.cos(el), se = Math.sin(el);
-      cam.position.set(center.x + dist * Math.cos(az) * ce, center.y + dist * se, center.z + dist * Math.sin(az) * ce);
-      cam.up.set(0, 1, 0); cam.lookAt(center); ctrls.target.copy(center); cam.updateMatrixWorld(true);
+      cam.position.copy(poses[i].pos); cam.up.copy(poses[i].up); cam.lookAt(center); ctrls.target.copy(center); cam.updateMatrixWorld(true);
       // Affiche l'état courant (calques existants + accum) pour que la capture le voie (contexte inpaint).
       dctx.clearRect(0, 0, RETEX_SIZE, RETEX_SIZE); dctx.drawImage(baseComposite, 0, 0); dctx.drawImage(accum, 0, 0);
       applyTextureCanvas(mesh, disp);
@@ -1168,7 +1210,7 @@ async function multiViewTexture(mesh, prompt, key, nViews) {
       actx.globalCompositeOperation = 'source-over';
     }
     if (dbg) dl(accum.toDataURL('image/png'), 'mv-accum-final.png');
-    layers.push({ name: 'IA 360°: ' + prompt.slice(0, 12), canvas: accum, thumb: accum, opacity: 1, visible: true });
+    layers.push({ name: (nViews === 6 ? 'IA cube: ' : 'IA 360°: ') + prompt.slice(0, 12), canvas: accum, thumb: accum, opacity: 1, visible: true });
     _retexSelLayer = null; _retexMaskMode = 'layer';
     recomposeRetex(); renderRetexLayers();
     setStatus(`Texturing multi-vues terminé (${nViews} vues).`);
@@ -1574,6 +1616,33 @@ document.getElementById('decimate-btn').addEventListener('click', async () => {
   } catch (err) { console.error(err); setStatus(`Décimation : ${err.message}`); }
   finally { const wait = Math.max(0, 250 - (performance.now() - startedAt)); setTimeout(() => showLoading(false), wait); }
 });
+async function doUnwrap() {
+  const mesh = state.targetMesh;
+  if (!mesh) { setStatus('Aucun objet à déplier.'); return; }
+  if (mesh.userData._wallView) { setStatus('Quitte d’abord la vue épaisseur.'); return; }
+  if (isRig(mesh)) { setStatus('Dépliage UV non disponible sur un modèle riggé.'); return; }
+  if (isGizmoActive()) deactivateGizmo();
+  showLoading(true, 'Dépliage UV…');
+  const startedAt = performance.now();
+  await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+  try {
+    const res = await Promise.resolve().then(() => unwrapUVs(mesh.geometry));
+    if (!res || !res.geometry) { setStatus('Dépliage UV impossible.'); return; }
+    const newMesh = createObject(res.geometry, baseMatOf(mesh).clone(), mesh.name);
+    newMesh.position.copy(mesh.position); newMesh.quaternion.copy(mesh.quaternion); newMesh.scale.copy(mesh.scale); newMesh.updateMatrixWorld(true);
+    const old = mesh;
+    detachObject(old); setActiveObject(newMesh); renderObjectList();
+    setStatus(`UV dépliées — ${res.charts} charts. Le retexturing est maintenant disponible.`);
+    pushAction(
+      () => { detachObject(newMesh); attachObject(old); setActiveObject(old); renderObjectList(); },
+      () => { detachObject(old); attachObject(newMesh); setActiveObject(newMesh); renderObjectList(); },
+      () => { for (const m of [old, newMesh]) if (!state.objects.includes(m)) disposeObject(m); },
+    );
+  } catch (err) { console.error(err); setStatus(`Dépliage UV : ${err.message}`); }
+  finally { const wait = Math.max(0, 250 - (performance.now() - startedAt)); setTimeout(() => showLoading(false), wait); }
+}
+{ const u1 = document.getElementById('unwrap-btn'), u2 = document.getElementById('retex-unwrap');
+  if (u1) u1.addEventListener('click', doUnwrap); if (u2) u2.addEventListener('click', doUnwrap); }
 document.getElementById('orient-btn').addEventListener('click', async () => {
   const mesh = state.targetMesh;
   if (!mesh) { setStatus('Aucun objet à orienter.'); return; }
@@ -1752,10 +1821,6 @@ function applyToolVisibility(tool) {
 const toolButtons = document.querySelectorAll('.tool-btn');
 toolButtons.forEach((btn) => {
   btn.addEventListener('click', () => {
-    if (btn.dataset.tool === 'retexture' && btn.dataset.noUv === '1') { // pas d'UV -> on explique et on n'active pas
-      setStatus('Retexturing indisponible : l’objet sélectionné ne contient pas de développement UV.');
-      return;
-    }
     state.params.tool = btn.dataset.tool;
     toolButtons.forEach((b) => b.classList.toggle('active', b === btn));
     const t = state.params.tool, isGizmo = t === 'gizmo', isMask = t === 'mask', isRetex = t === 'retexture', isVP = t === 'vertexpaint';
@@ -1767,6 +1832,7 @@ toolButtons.forEach((btn) => {
     document.getElementById('gizmo-hint').style.display = isGizmo ? '' : 'none';
     document.getElementById('mask-panel').style.display = isMask ? 'flex' : 'none';
     document.getElementById('retexture-panel').style.display = isRetex ? 'flex' : 'none';
+    if (isRetex) { updateRetexUVState(); updateTexturePreview(true); } // sans UV : seul « Déplier les UV » actif ; aperçu (avec UV) affiché
     document.getElementById('vertexpaint-panel').style.display = isVP ? 'flex' : 'none';
     { const rs = document.getElementById('render-settings'); if (rs) rs.style.display = t === 'render' ? 'flex' : 'none'; }
     { const dp = document.getElementById('display-param'); if (dp) dp.style.display = t === 'render' ? 'none' : ''; } // pas de mode d'affichage en Rendu
@@ -2216,10 +2282,11 @@ document.getElementById('mask-split').addEventListener('click', () => {
   if (isGizmoActive()) deactivateGizmo();
   showLoading(true, 'Séparation du masque…');
   const startedAt = performance.now();
-  requestAnimationFrame(() => requestAnimationFrame(() => {
+  requestAnimationFrame(() => requestAnimationFrame(async () => {
     try {
       const res = splitByMask(mesh.geometry, maskSrc, 0.5, state.params.cutDetail);
       if (!res) { setStatus('Rien à séparer (masque vide, total, ou sans frontière nette).'); return; }
+      await maybeAddConnectors(res, mesh.geometry); // tenons/mortaises si l'option est cochée
       // DoubleSide : l'orientation des parois/caps n'est pas garantie (évite les faces noires
       // et les normales à l'envers sur les caps après recalcul).
       const matIn = baseMatOf(mesh).clone(); matIn.side = THREE.DoubleSide;
@@ -2415,6 +2482,7 @@ bindSlider('size-range', 'size-num', 'sizeFrac', (v) => v.toFixed(3)); // le sli
 document.getElementById('invert-check').addEventListener('change', (e) => {
   state.params.invert = e.target.checked;
 });
+{ const sc = document.getElementById('split-connectors'); if (sc) sc.addEventListener('change', () => { state.params.splitConnectors = sc.checked; }); }
 {
   const LS = 'sculpt-symmetry';
   try { const s = JSON.parse(localStorage.getItem(LS) || 'null'); if (s) { if (s.symmetry) Object.assign(state.params.symmetry, s.symmetry); if (s.space) state.params.symmetrySpace = s.space; if (s.planes !== undefined) state.params.symmetryShowPlanes = s.planes; } } catch (_) { /* corrompu */ }
