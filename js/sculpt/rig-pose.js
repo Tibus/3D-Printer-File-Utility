@@ -8,7 +8,7 @@
 import * as THREE from 'three';
 import { TransformControls } from 'three/addons/controls/TransformControls.js';
 import { state } from './state.js';
-import { rigOf, resetRigPose } from './rig.js';
+import { rigOf, resetRigPose, pauseRigPlayback, refreshSkeleton } from './rig.js';
 
 let _tc = null, _group = null, _markers = [], _pickables = [];
 let _rig = null, _obj = null, _bones = [], _selectedIndex = -1, _active = false, _onSelect = null;
@@ -32,8 +32,8 @@ function ensureTC() {
   _tc = new TransformControls(state.camera, state.renderer.domElement);
   _tc.setMode('rotate'); _tc.setSpace('local'); _tc.setSize(0.7);
   _tc.addEventListener('dragging-changed', (e) => { state.controls.enabled = !e.value; });
-  _tc.addEventListener('mouseDown', () => { if (_gizmoMode === 'translate') beginJointDrag(); });
-  _tc.addEventListener('objectChange', () => { if (_gizmoMode === 'translate') applyJointFreeze(); if (_rig) _rig.poseDirty = true; if (_onSelect) _onSelect(_selectedIndex); });
+  _tc.addEventListener('mouseDown', () => { if (_obj) pauseRigPlayback(_obj); if (_gizmoMode === 'translate') beginJointDrag(); }); // saisir un os met l'anim en pause (sinon le mixer réécrit l'os)
+  _tc.addEventListener('objectChange', () => { if (_gizmoMode === 'translate') applyJointFreeze(); if (_rig) _rig.poseDirty = true; if (_obj) refreshSkeleton(_obj); if (_onSelect) _onSelect(_selectedIndex); });
   _tc.addEventListener('mouseUp', () => { _jointSnap = null; });
   state.scene.add(_tc);
   _tc.enabled = false; _tc.visible = false;

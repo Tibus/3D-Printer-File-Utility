@@ -116,9 +116,17 @@ export function playRetargetClip(obj, index) {
 // Avance la source + applique le mapping sur le squelette courant. Appelé par la boucle (rig.js).
 export function updateRetarget(rig, dt) {
   const rt = rig.retarget; if (!rt || !rt.action) return;
-  rt.mixer.update(rig.playing ? dt : 0);
+  // En PAUSE : ne PAS ré-évaluer les tracks (mixer.update(0) réapplique le mapping et écraserait un os
+  // tourné à la main). L'éditeur GLB fait pareil : il saute l'évaluation en « special mode ». La pose
+  // courante reste telle quelle -> on peut modifier la rotation d'un os après avoir lancé l'anim.
+  if (!rig.playing) return;
+  rt.mixer.update(dt);
   matchToPrincipal(rig);
 }
+
+// Applique le mapping retarget sur le squelette principal SANS avancer le temps (pour le scrub en pause :
+// on a déjà positionné rt.mixer via mixer.update(0), il reste à propager aux os principaux).
+export function applyRetargetPose(rig) { if (rig && rig.retarget && rig.retarget.action) matchToPrincipal(rig); }
 
 function matchToPrincipal(rig) {
   const rt = rig.retarget, t = rt.target;

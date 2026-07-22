@@ -34,7 +34,7 @@ import { captureView, reprojectToUV, compositeLayers, applyTextureCanvas, hasPen
 import { splitByMask } from './split-mask.js';
 import { pushGeom, pushAction, pushMask, pushColor, undo, redo, setHistoryListener } from './history.js';
 import { getPalette, ensureColorAttr, eyedropSample, applyPaletteFromTexture, buildVertexPaint3MF, rgbToHex, hexToRgb, nearestPaletteIndex } from './vertexpaint.js';
-import { isRig, rigOf, bakePose, isPoseDirty, markPoseDirty, resetRigPose, updateRigs, playClip, setPlaying, stopClip, seekClip, clipInfo, toggleSkeleton } from './rig.js';
+import { isRig, rigOf, bakePose, isPoseDirty, markPoseDirty, resetRigPose, pauseRigPlayback, refreshSkeleton, updateRigs, playClip, setPlaying, stopClip, seekClip, clipInfo, toggleSkeleton } from './rig.js';
 import { loadRetargetSource, playRetargetClip, disposeRetarget } from './rig-retarget.js';
 import { enterPose, exitPose, isPoseActive, pickBoneAtMouse, resetPose, updatePoseMarkers, selectByIndex, poseBones, selectedIndex, selectedBone, isTwistBone, setGizmoMode, markerUnderMouse } from './rig-pose.js';
 import { enterWeightPaint, exitWeightPaint, isWeightPaintActive, setPaintBone, paintAt as wpPaintAt, smooth as wpSmooth, refreshWeights, beginWeightStroke, endWeightStroke, applySkinRecord, pickPoint as wpPickPoint } from './rig-weightpaint.js';
@@ -2191,9 +2191,10 @@ function syncBonesModeUI() {
     const s = document.getElementById('pose-rot-' + a);
     if (s) s.addEventListener('input', () => {
       const b = selectedBone(); if (!b) return;
+      pauseRigPlayback(state.targetMesh); // sinon le mixer d'anim réécrit l'os à chaque frame
       b.rotation[a] = THREE.MathUtils.degToRad(parseFloat(s.value));
       const v = document.getElementById('pose-rot-' + a + '-v'); if (v) v.textContent = s.value;
-      b.updateMatrixWorld();
+      refreshSkeleton(state.targetMesh); // répercute sur le skinning + le helper
       markPoseDirty(state.targetMesh);
     });
   }

@@ -12,7 +12,7 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { FBXLoader } from 'three/addons/loaders/FBXLoader.js';
 import { state } from './state.js';
-import { updateRetarget } from './rig-retarget.js';
+import { updateRetarget, applyRetargetPose } from './rig-retarget.js';
 
 const _clock = new THREE.Clock();
 
@@ -175,7 +175,7 @@ export function stopClip(obj) {
 export function seekClip(obj, t) {
   const rig = rigOf(obj); if (!rig) return; const act = activeAction(rig); if (!act) return;
   act.time = Math.max(0, Math.min(t, act.getClip().duration));
-  if (rig.retargeting && rig.retarget) rig.retarget.mixer.update(0); else rig.mixer.update(0);
+  if (rig.retargeting && rig.retarget) { rig.retarget.mixer.update(0); applyRetargetPose(rig); } else rig.mixer.update(0);
 }
 export function clipInfo(obj) {
   const rig = rigOf(obj); if (!rig) return null; const act = activeAction(rig); if (!act) return null;
@@ -195,6 +195,26 @@ export async function importAnimations(obj, file) {
     for (const c of clips) { if (!c.name) c.name = 'clip'; rig.animations.push(c); }
     return clips.length;
   } finally { URL.revokeObjectURL(url); }
+}
+
+// Met la lecture (anim/retarget) en PAUSE en gardant la pose courante (les os ne sont plus réécrits par le
+// mixer) -> permet de modifier la rotation d'un os après avoir lancé une animation.
+export function pauseRigPlayback(obj) {
+  const rig = rigOf(obj); if (!rig) return;
+  const act = rig.retargeting && rig.retarget ? rig.retarget.action : rig.action;
+  if (act) act.paused = true; // fige l'action (sinon le binding du mixer garde la main sur les os)
+  rig.playing = false; // NE PAS toucher rig.retargeting : on reste en mode retarget mais en pause
+  // (updateRetarget saute la ré-évaluation quand !playing -> les os ne sont plus réécrits, resume OK).
+}
+
+// Force la répercussion d'une pose éditée à la main : matrices monde des os -> skinning (skeleton.update)
+// -> helper. Nécessaire après une rotation d'os au gizmo/slider quand une anim a tourné (le mixer ne
+// rafraîchit plus le squelette).
+export function refreshSkeleton(obj) {
+  const rig = rigOf(obj); if (!rig) return;
+  if (rig.root) rig.root.updateWorldMatrix(true, true);
+  for (const sm of rig.skinned) if (sm.skeleton) sm.skeleton.update();
+  if (rig.helper && rig.helper.updateMatrixWorld) rig.helper.updateMatrixWorld(true);
 }
 
 // Affiche/masque le helper de squelette.
