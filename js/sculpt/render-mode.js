@@ -15,20 +15,23 @@ import { GTAOPass } from 'three/addons/postprocessing/GTAOPass.js';
 import { FullScreenQuad } from 'three/addons/postprocessing/Pass.js';
 import { HorizontalBlurShader } from 'three/addons/shaders/HorizontalBlurShader.js';
 import { VerticalBlurShader } from 'three/addons/shaders/VerticalBlurShader.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { state } from './state.js';
 
 let _active = false;
 let _composer = null, _gtao = null, _renderPass = null, _output = null;
-let _shadowLight = null, _ambient = null;
+let _shadowLight = null, _ambient = null, _fillDir = null;
 let _ground = null, _groundMat = null;                 // plan de sol + shader d'ombre projetée
 let _csCam = null, _csRT = null, _csBlurRT = null, _silMat = null, _fsq = null, _hBlur = null, _vBlur = null;
 let _projCam = null, _projRT = null;                    // ombre de PROJECTION (dans l'axe de la lumière)
 const _projVP = new THREE.Matrix4();
 const _depthMat = new THREE.MeshBasicMaterial({ colorWrite: false }); // passe profondeur du modèle (overlay du sol)
-let _saved = null, _hidden = [], _savedMats = [], _savedLights = [];
+let _saved = null, _hidden = [], _savedMats = [], _savedLights = [], _renderMats = [];
+let _pmrem = null, _envRT = null;                       // environnement IBL (GI optionnelle)
 let _span = 2, _center = new THREE.Vector3(), _minY = -1;
 const _CS = 1024; // résolution des textures d'ombre au sol
-const _params = { ao: 1.6, aoRadius: 0.12, ambient: 1.3, shadowOpacity: 0.35, contactBlur: 10, castBlur: 6, azimuth: 45, elevation: 60, modelShadows: true, projShadow: true };
+const _KEY = 3.0; // intensité directionnelle totale (clé + remplissage) — constante -> luminosité des zones éclairées stable
+const _params = { ao: 1.6, aoRadius: 0.12, ambient: 1.3, shadowOpacity: 0.35, selfShadow: 0.85, contactBlur: 10, castBlur: 6, azimuth: 45, elevation: 60, modelShadows: true, contactShadow: true, projShadow: true, gi: false };
 
 // Persistance des réglages de rendu dans localStorage (chargés à l'init, sauvés à chaque changement).
 const _LS_KEY = 'sculpt-render-params';
@@ -41,18 +44,42 @@ export function renderModeParams() { return _params; }
 // Matériau de rendu = MeshLambertMaterial, comme le viewer.html (non-PBR -> couleurs franches, reçoit
 // lumière + ombres). Texture (map) si présente, sinon vertex colors (linéarisés : ils sont stockés en
 // valeurs d'affichage sRGB, sinon le pipeline les ré-encode et les éclaircit -> « voile blanc »).
-const _vcMatCache = new WeakMap();
+// Matériau de rendu (créé à neuf à chaque application). Sans GI : Lambert (comme viewer.html). Avec GI :
+// MeshStandard qui RÉAGIT à l'environnement (IBL). Texture (map) si présente, sinon vertex colors
+// linéarisés (stockés en sRGB, sinon éclaircis par le pipeline).
 function renderMat(m) {
   const base = m.userData.baseMat || m.material;
   const map = base.map || (m.material && m.material.map) || null;
   const wantVC = !map && !!(m.geometry.attributes && m.geometry.attributes.color);
-  let mat = _vcMatCache.get(base);
-  if (!mat || mat.map !== map || mat.vertexColors !== wantVC) {
-    mat = new THREE.MeshLambertMaterial({ map: map || null, color: 0xffffff, vertexColors: wantVC, side: base.side !== undefined ? base.side : THREE.FrontSide });
-    if (wantVC) mat.onBeforeCompile = (sh) => { sh.fragmentShader = sh.fragmentShader.replace('#include <color_fragment>', '#include <color_fragment>\n\tdiffuseColor.rgb = pow( diffuseColor.rgb, vec3( 2.2 ) );'); };
-    _vcMatCache.set(base, mat);
-  }
+  const side = base.side !== undefined ? base.side : THREE.FrontSide;
+  const mat = _params.gi
+    ? new THREE.MeshStandardMaterial({ map: map || null, color: 0xffffff, vertexColors: wantVC, roughness: 0.9, metalness: 0, envMapIntensity: 0.7, side })
+    : new THREE.MeshLambertMaterial({ map: map || null, color: 0xffffff, vertexColors: wantVC, side });
+  if (wantVC) mat.onBeforeCompile = (sh) => { sh.fragmentShader = sh.fragmentShader.replace('#include <color_fragment>', '#include <color_fragment>\n\tdiffuseColor.rgb = pow( diffuseColor.rgb, vec3( 2.2 ) );'); };
   return mat;
+}
+
+// (Re)applique les matériaux de rendu à tous les objets (restaure d'abord les originaux).
+function applyRenderMaterials() {
+  for (const sm of _savedMats) sm.m.material = sm.mat;
+  for (const mm of _renderMats) mm.dispose && mm.dispose();
+  _savedMats = []; _renderMats = [];
+  for (const m of state.objects) {
+    if (!m.isMesh) continue;
+    const t = renderMat(m);
+    _renderMats.push(t); _savedMats.push({ m, mat: m.material }); m.material = t;
+  }
+}
+
+// Active/désactive l'environnement IBL (GI) selon _params.gi.
+function applyEnv() {
+  const r = state.renderer, s = state.scene;
+  if (_params.gi) {
+    if (!_envRT) { _pmrem = new THREE.PMREMGenerator(r); _envRT = _pmrem.fromScene(new RoomEnvironment(), 0.04); }
+    s.environment = _envRT.texture;
+  } else {
+    s.environment = null;
+  }
 }
 
 function sceneBounds() {
@@ -93,14 +120,23 @@ function applyCastBlur() {
   if (_shadowLight.shadow.map) { _shadowLight.shadow.map.dispose(); _shadowLight.shadow.map = null; } // régénère à la nouvelle taille
 }
 
+// Répartit _KEY entre la clé (avec ombre) et le remplissage (sans ombre) : selfShadow=1 -> tout en clé
+// (ombre pleine) ; selfShadow=0 -> tout en remplissage (pas d'ombre sur l'objet).
+function applyLightBalance() {
+  if (_shadowLight) _shadowLight.intensity = _params.selfShadow * _KEY;
+  if (_fillDir) _fillDir.intensity = (1 - _params.selfShadow) * _KEY;
+}
+
 // Oriente la DIRECTIONNELLE (auto-ombrage du modèle) selon azimut/hauteur.
 function placeLight() {
   if (!_shadowLight) return;
   const az = THREE.MathUtils.degToRad(_params.azimuth), el = THREE.MathUtils.degToRad(_params.elevation);
   const ch = Math.cos(el), d = Math.max(1e-3, _span * 3);
-  _shadowLight.position.set(_center.x + d * ch * Math.cos(az), _minY + d * Math.sin(el) + _span * 0.1, _center.z + d * ch * Math.sin(az));
+  const px = _center.x + d * ch * Math.cos(az), py = _minY + d * Math.sin(el) + _span * 0.1, pz = _center.z + d * ch * Math.sin(az);
+  _shadowLight.position.set(px, py, pz);
   _shadowLight.target.position.copy(_center);
   _shadowLight.target.updateMatrixWorld(true);
+  if (_fillDir) { _fillDir.position.set(px, py, pz); _fillDir.target.position.copy(_center); _fillDir.target.updateMatrixWorld(true); }
   updateProjCam();
 }
 
@@ -126,8 +162,14 @@ function buildShadow(box) {
   // matériaux Lambert (l'IBL n'agit pas dessus), + directionnelle FORTE (modelé + auto-ombrage du modèle).
   _ambient = new THREE.HemisphereLight(0xffffff, 0x8a8674, _params.ambient);
   state.scene.add(_ambient);
-  _shadowLight = new THREE.DirectionalLight(0xffffff, 3.0);
+  _shadowLight = new THREE.DirectionalLight(0xffffff, _KEY);
   _shadowLight.castShadow = true;
+  // Remplissage : MÊME axe que la clé, SANS ombre -> éclaire les zones ombrées (contrôle l'opacité de
+  // l'auto-ombrage). clé + remplissage = _KEY constant, donc les zones éclairées gardent leur luminosité.
+  _fillDir = new THREE.DirectionalLight(0xffffff, 0);
+  _fillDir.castShadow = false;
+  state.scene.add(_fillDir); state.scene.add(_fillDir.target);
+  applyLightBalance();
   const cam = _shadowLight.shadow.camera;
   const r = _span * 2.0;
   cam.left = -r; cam.right = r; cam.top = r; cam.bottom = -r; cam.near = 0.01; cam.far = _span * 10;
@@ -174,6 +216,7 @@ function buildContactShadow(size) {
     uniforms: {
       uContactTex: { value: _csRT.texture },
       uContactVP: { value: new THREE.Matrix4().multiplyMatrices(_csCam.projectionMatrix, _csCam.matrixWorldInverse) },
+      uContactOn: { value: _params.contactShadow ? 1.0 : 0.0 },
       uProjTex: { value: _projRT.texture },
       uProjVP: { value: new THREE.Matrix4() },
       uProjOn: { value: _params.projShadow ? 1.0 : 0.0 },
@@ -182,12 +225,12 @@ function buildContactShadow(size) {
     vertexShader: 'varying vec3 vW; void main(){ vec4 w = modelMatrix * vec4(position,1.0); vW = w.xyz; gl_Position = projectionMatrix * viewMatrix * w; }',
     fragmentShader: [
       'varying vec3 vW;',
-      'uniform sampler2D uContactTex; uniform mat4 uContactVP;',
+      'uniform sampler2D uContactTex; uniform mat4 uContactVP; uniform float uContactOn;',
       'uniform sampler2D uProjTex; uniform mat4 uProjVP; uniform float uProjOn;',
       'uniform float uOpacity;',
       'float sampleShadow(sampler2D t, mat4 vp){ vec4 c = vp * vec4(vW,1.0); vec2 uv = c.xy/c.w*0.5+0.5; if(uv.x<0.0||uv.x>1.0||uv.y<0.0||uv.y>1.0) return 0.0; return texture2D(t, uv).a; }',
       'void main(){',
-      '  float a = sampleShadow(uContactTex, uContactVP);',
+      '  float a = uContactOn * sampleShadow(uContactTex, uContactVP);',
       '  a = max(a, uProjOn * sampleShadow(uProjTex, uProjVP));',
       '  gl_FragColor = vec4(0.0,0.0,0.0, a*uOpacity);',
       '}',
@@ -223,7 +266,7 @@ function updateContactShadow() {
   const prevBg = s.background, prevRT = r.getRenderTarget();
   const prevCC = r.getClearColor(new THREE.Color()), prevCA = r.getClearAlpha(), prevAuto = r.autoClear;
   s.background = null; r.autoClear = true;
-  renderSilhouette(_csCam, _csRT, r, s, Math.max(0.0001, _params.contactBlur / 512), 2);        // contact : gros flou doux (façon AO)
+  if (_params.contactShadow) renderSilhouette(_csCam, _csRT, r, s, Math.max(0.0001, _params.contactBlur / 512), 2); // contact : gros flou doux (façon AO)
   if (_params.projShadow) renderSilhouette(_projCam, _projRT, r, s, Math.max(0.0001, _params.castBlur / 2200), 1); // projection : flou LÉGER (proche de l'ombre objet)
   r.setRenderTarget(prevRT); r.setClearColor(prevCC, prevCA); r.autoClear = prevAuto;
   s.background = prevBg;
@@ -254,10 +297,10 @@ export function enterRenderMode() {
 
   buildShadow(sceneBounds());
   _savedLights = [];
-  state.scene.traverse((o) => { if (o.isLight && o !== _shadowLight && o !== _ambient) { _savedLights.push({ o, vis: o.visible }); o.visible = false; } });
+  state.scene.traverse((o) => { if (o.isLight && o !== _shadowLight && o !== _ambient && o !== _fillDir) { _savedLights.push({ o, vis: o.visible }); o.visible = false; } });
   hideHelpers();
-  _savedMats = [];
-  for (const m of state.objects) { if (!m.isMesh) continue; const t = renderMat(m); if (m.material !== t) { _savedMats.push({ m, mat: m.material }); m.material = t; } }
+  applyEnv();               // GI optionnelle (scene.environment)
+  applyRenderMaterials();   // Lambert, ou MeshStandard si GI
   buildComposer();
 }
 
@@ -269,6 +312,7 @@ export function exitRenderMode() {
   if (_composer) { _composer.passes.forEach((p) => p.dispose && p.dispose()); _composer = null; _gtao = _renderPass = _output = null; }
   if (_shadowLight) { s.remove(_shadowLight.target); s.remove(_shadowLight); _shadowLight.dispose && _shadowLight.dispose(); _shadowLight = null; }
   if (_ambient) { s.remove(_ambient); _ambient.dispose && _ambient.dispose(); _ambient = null; }
+  if (_fillDir) { s.remove(_fillDir.target); s.remove(_fillDir); _fillDir.dispose && _fillDir.dispose(); _fillDir = null; }
   if (_ground) { s.remove(_ground); _ground.geometry.dispose(); _ground.material.dispose(); _ground = null; _groundMat = null; }
   if (_csRT) { _csRT.dispose(); _csRT = null; }
   if (_projRT) { _projRT.dispose(); _projRT = null; }
@@ -278,9 +322,12 @@ export function exitRenderMode() {
   if (_silMat) { _silMat.dispose(); _silMat = null; }
   _csCam = _hBlur = _vBlur = null;
   for (const o of state.objects) o.traverse((n) => { if (n.isMesh) { n.castShadow = false; n.receiveShadow = false; } });
+  if (_envRT) { _envRT.dispose(); _envRT = null; }
+  if (_pmrem) { _pmrem.dispose(); _pmrem = null; }
 
   for (const sm of _savedMats) sm.m.material = sm.mat;
-  _savedMats = [];
+  for (const mm of _renderMats) mm.dispose && mm.dispose();
+  _savedMats = []; _renderMats = [];
   for (const l of _savedLights) l.o.visible = l.vis;
   _savedLights = [];
   for (const h of _hidden) h.obj.visible = h.vis;
@@ -337,7 +384,11 @@ export function setShadowOpacity(v) { _params.shadowOpacity = v; if (_groundMat)
 export function setContactBlur(v) { _params.contactBlur = v; saveParams(); }
 // Flou de l'ombre PORTÉE : au sol (projection) ET sur les objets (pénombre PCF).
 export function setCastBlur(v) { _params.castBlur = v; applyCastBlur(); saveParams(); }
+// Opacité de l'ombre SUR les objets (auto-ombrage) : 1 = pleine, 0 = aucune (plus lumineux).
+export function setSelfShadow(v) { _params.selfShadow = v; applyLightBalance(); saveParams(); }
+export function setContactShadow(on) { _params.contactShadow = !!on; if (_groundMat) _groundMat.uniforms.uContactOn.value = on ? 1.0 : 0.0; saveParams(); }
 export function setProjShadow(on) { _params.projShadow = !!on; if (_groundMat) _groundMat.uniforms.uProjOn.value = on ? 1.0 : 0.0; saveParams(); }
+export function setGI(on) { _params.gi = !!on; if (_active) { applyEnv(); applyRenderMaterials(); } saveParams(); }
 export function setShadowAzimuth(v) { _params.azimuth = v; placeLight(); saveParams(); }
 export function setShadowElevation(v) { _params.elevation = v; placeLight(); saveParams(); }
 export function setModelShadows(on) {

@@ -26,7 +26,7 @@ import { autoOrient } from './orient.js';
 import { decimateMesh } from './decimate.js';
 import { applyDisplayMode } from './display.js';
 import { saveScene, loadScene, clearScene, restoreRig } from './autosave.js';
-import { isRenderMode, enterRenderMode, exitRenderMode, renderFrame as renderModeFrame, onResize as renderModeResize, renderModeParams, setAOStrength, setAORadius, setAmbient, setShadowOpacity, setContactBlur, setCastBlur, setShadowAzimuth, setShadowElevation, setModelShadows, setProjShadow } from './render-mode.js';
+import { isRenderMode, enterRenderMode, exitRenderMode, renderFrame as renderModeFrame, onResize as renderModeResize, renderModeParams, setAOStrength, setAORadius, setAmbient, setShadowOpacity, setContactBlur, setCastBlur, setShadowAzimuth, setShadowElevation, setModelShadows, setContactShadow, setProjShadow, setGI, setSelfShadow } from './render-mode.js';
 import { captureView, reprojectToUV, compositeLayers, applyTextureCanvas, hasPendingCam, getPendingCam, captureSquareSidePx, paintMaskDab, readMaskCanvas, disposeLayerMask, setLayerMask, invertLayerMask, renderMaskView, renderReliefMaskView, generateNanoBanana } from './retexture.js';
 import { splitByMask } from './split-mask.js';
 import { pushGeom, pushAction, pushMask, pushColor, undo, redo, setHistoryListener } from './history.js';
@@ -2243,14 +2243,19 @@ bindSlider('size-range', 'size-num', 'sizeFrac', (v) => v.toFixed(3)); // le sli
   rangeVal('render-ao', 'render-ao-v', setAOStrength, (x) => x.toFixed(2));
   rangeVal('render-ao-radius', 'render-ao-radius-v', setAORadius, (x) => x.toFixed(3));
   rangeVal('render-shadow-op', 'render-shadow-op-v', setShadowOpacity, (x) => x.toFixed(2));
+  rangeVal('render-self-shadow', 'render-self-shadow-v', setSelfShadow, (x) => x.toFixed(2));
   rangeVal('render-contact-blur', 'render-contact-blur-v', setContactBlur, (x) => String(Math.round(x)));
   rangeVal('render-cast-blur', 'render-cast-blur-v', setCastBlur, (x) => String(Math.round(x)));
   rangeVal('render-shadow-az', 'render-shadow-az-v', setShadowAzimuth, (x) => Math.round(x) + '°');
   rangeVal('render-shadow-el', 'render-shadow-el-v', setShadowElevation, (x) => Math.round(x) + '°');
   const ms = document.getElementById('render-model-shadows');
   if (ms) ms.addEventListener('change', () => setModelShadows(ms.checked));
+  const cs = document.getElementById('render-contact-shadow');
+  if (cs) cs.addEventListener('change', () => setContactShadow(cs.checked));
   const ps = document.getElementById('render-proj-shadow');
   if (ps) ps.addEventListener('change', () => setProjShadow(ps.checked));
+  const gi = document.getElementById('render-gi');
+  if (gi) gi.addEventListener('change', () => setGI(gi.checked));
   // Synchronise l'UI sur les réglages restaurés du localStorage.
   const p = renderModeParams();
   const setUI = (id, vid, val, fmt) => { const r = document.getElementById(id), v = document.getElementById(vid); if (r) r.value = val; if (v) v.textContent = fmt(val); };
@@ -2258,12 +2263,15 @@ bindSlider('size-range', 'size-num', 'sizeFrac', (v) => v.toFixed(3)); // le sli
   setUI('render-ao', 'render-ao-v', p.ao, (x) => x.toFixed(2));
   setUI('render-ao-radius', 'render-ao-radius-v', p.aoRadius, (x) => x.toFixed(3));
   setUI('render-shadow-op', 'render-shadow-op-v', p.shadowOpacity, (x) => x.toFixed(2));
+  setUI('render-self-shadow', 'render-self-shadow-v', p.selfShadow, (x) => x.toFixed(2));
   setUI('render-contact-blur', 'render-contact-blur-v', p.contactBlur, (x) => String(Math.round(x)));
   setUI('render-cast-blur', 'render-cast-blur-v', p.castBlur, (x) => String(Math.round(x)));
   setUI('render-shadow-az', 'render-shadow-az-v', p.azimuth, (x) => Math.round(x) + '°');
   setUI('render-shadow-el', 'render-shadow-el-v', p.elevation, (x) => Math.round(x) + '°');
   if (ms) ms.checked = p.modelShadows;
+  if (cs) cs.checked = p.contactShadow;
   if (ps) ps.checked = p.projShadow;
+  if (gi) gi.checked = p.gi;
 }
 
 // Intensité : slider seul + affichage en % (pas de champ éditable).
