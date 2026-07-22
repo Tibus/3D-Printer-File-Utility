@@ -124,10 +124,11 @@
 
   <div id="retexture-panel" style="display:none; flex-direction:column; gap:10px;">
     <button id="retex-capture" class="control-btn" title="Télécharge un screenshot de la vue (à modifier par IA, puis à réimporter)">📷 Capturer la vue (pour IA)</button>
-
+    <button id="retex-pregen" class="control-btn" title="Peindre une zone : la génération IA ne modifiera QUE cette zone (inpaint) et la raccordera au reste">🎯 Zone à modifier (inpaint)</button>
+    
     <!-- Génération IA directe (Nano Banana / Gemini) — clé de l'utilisateur (BYOK) -->
     <div style="display:flex; flex-direction:column; gap:6px; padding:8px; background:#12121e; border:1px solid #2a2a44; border-radius:8px;">
-      <textarea id="retex-prompt" rows="2" placeholder="Prompt : ce que l'IA doit faire à la texture (ex : « transforme en marbre veiné blanc »)"
+      <textarea id="retex-prompt" rows="5" placeholder="Prompt : ce que l'IA doit faire à la texture (ex : « transforme en marbre veiné blanc »)"
         style="width:100%; box-sizing:border-box; resize:vertical; background:#0d0d16; color:#e6e6f0; border:1px solid #2a2a44; border-radius:6px; padding:6px; font:13px/1.4 system-ui,sans-serif;"></textarea>
       <button id="retex-generate" class="control-btn" title="Génère l'édition via Nano Banana et la reprojette sur l'objet">🍌 Générer (Nano Banana)</button>
       <div style="display:flex; gap:6px;">
@@ -137,24 +138,30 @@
       <!-- Relief IA : l'IA renvoie une height map (niveaux de gris) reprojetée -> déplace les vertices le long
            des normales. Devient un CALQUE de type « relief » à gauche : l'amplitude s'y règle à la volée (comme
            l'opacité d'un calque couleur). Respecte la zone d'inpaint si peinte. -->
-      <button id="retex-relief" class="control-btn" title="Ajoute un calque de RELIEF géométrique : l'IA génère une height map du détail demandé, reprojetée puis appliquée en déplaçant les vertices le long des normales. Le relief devient un calque à gauche dont tu règles l'amplitude à la volée (le détail dépend de la densité du maillage — subdivise si besoin)">⛰️ Relief IA (→ calque)</button>
+      <button id="retex-relief" class="control-btn" title="Ajoute un calque de RELIEF géométrique : l'IA génère une height map du détail demandé, reprojetée puis appliquée en déplaçant les vertices le long des normales. Le relief devient un calque à gauche dont tu règles l'amplitude à la volée (le détail dépend de la densité du maillage — subdivise si besoin)">⛰️ Relief IA</button>
       <button id="retex-texrelief" class="control-btn" title="Génère À LA FOIS la texture et le relief (2 appels IA chaînés) : d'abord la couleur (ex. « cicatrice sur la joue »), puis la height map DÉRIVÉE de ce rendu couleur (le relief se creuse exactement où la couleur est peinte). Produit 2 calques : texture + relief.">🩹 Texture + Relief</button>
       <input type="password" id="retex-apikey" placeholder="Clé API Gemini"
         style="width:100%; box-sizing:border-box; background:#0d0d16; color:#e6e6f0; border:1px solid #2a2a44; border-radius:6px; padding:6px; font:12px/1.4 system-ui,sans-serif;">
       <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener noreferrer"
         style="font-size:11px; color:#22d3ee; text-decoration:none;">🔑 Comment créer une clé ?</a>
+    </div>
+    
+    <div style="display:flex; flex-direction:column; gap:6px; padding:8px; background:#12121e; border:1px solid #2a2a44; border-radius:8px;">
+      <div style="font-size:11.5px; line-height:1.4; color:#9a9ac0;">
+        Outils de débug!
+      </div>
+      
       <label class="check" style="font-size:11px;" title="Télécharge la capture envoyée, le retour de l'IA et le bake UV, à chaque génération">
-        <input type="checkbox" id="retex-debug" checked>
+        <input type="checkbox" id="retex-debug">
         <span>Debug entrées/sorties IA (export PNG)</span>
       </label>
+      
+      <button id="retex-import-proj" class="control-btn" title="Importer une image vue-caméra : reprojetée sur l'UV de l'objet">🖼️ Importer (reprojeté)</button>
+      <button id="retex-import-uv" class="control-btn" title="Importer une image déjà en UV (texture dépliée)">🗺️ Importer (UV direct)</button>
+      <button id="retex-replace" class="control-btn" title="Remplacer la texture de base par une image UV uploadée">📤 Remplacer la texture</button>
+      <button id="retex-download" class="control-btn" title="Télécharger la texture composite (atlas UV) en PNG">💾 Télécharger la texture</button>
+      <input type="file" id="retex-file" accept="image/*" style="display:none">
     </div>
-
-    <button id="retex-import-proj" class="control-btn" title="Importer une image vue-caméra : reprojetée sur l'UV de l'objet">🖼️ Importer (reprojeté)</button>
-    <button id="retex-import-uv" class="control-btn" title="Importer une image déjà en UV (texture dépliée)">🗺️ Importer (UV direct)</button>
-    <button id="retex-replace" class="control-btn" title="Remplacer la texture de base par une image UV uploadée">📤 Remplacer la texture</button>
-    <button id="retex-pregen" class="control-btn" title="Peindre une zone : la génération IA ne modifiera QUE cette zone (inpaint) et la raccordera au reste">🎯 Zone à modifier (inpaint)</button>
-    <button id="retex-download" class="control-btn" title="Télécharger la texture composite (atlas UV) en PNG">💾 Télécharger la texture</button>
-    <input type="file" id="retex-file" accept="image/*" style="display:none">
   </div>
 
   <!-- Vertex Paint (FDM) : palette de couleurs peintes par sommet + export 3MF multicouleur (MMU) -->
@@ -318,10 +325,29 @@
       <input type="checkbox" id="invert-check">
       <span>Inverser (retirer)</span>
     </label>
-    <label class="check" data-tools="sculpt">
-      <input type="checkbox" id="symmetry-check">
-      <span>Symétrie X</span>
-    </label>
+    <div class="param" data-tools="sculpt vertexpaint">
+      <label><span class="param-label">Symétrie</span></label>
+      <div class="sym-row">
+        <div class="sym-axes">
+          <button class="sym-axis" data-axis="x" title="Symétrie sur l'axe X">X</button>
+          <button class="sym-axis" data-axis="y" title="Symétrie sur l'axe Y">Y</button>
+          <button class="sym-axis" data-axis="z" title="Symétrie sur l'axe Z">Z</button>
+        </div>
+        <div class="sym-space" title="Local : axes de l'objet (suit sa rotation). Monde : axes du monde (origine 0,0,0).">
+          <button data-space="local">Local</button>
+          <button data-space="world">Monde</button>
+        </div>
+        <button id="sym-planes" class="sym-axis" title="Afficher / masquer les plans de symétrie">▦</button>
+        <button id="sym-edit" class="sym-axis" title="Éditer le plan de symétrie local (déplacer / tourner)">✎</button>
+      </div>
+      <div id="sym-edit-tools" class="sym-row" style="display:none;">
+        <div class="sym-space">
+          <button data-symgz="translate" class="active">Déplacer</button>
+          <button data-symgz="rotate">Tourner</button>
+        </div>
+        <button id="sym-reset" class="sym-axis" style="width:auto; padding:0 8px; margin-left:auto;" title="Réinitialiser le plan (centre de l'objet, sans rotation)">↺</button>
+      </div>
+    </div>
     <label class="check">
       <input type="checkbox" id="wireframe-check">
       <span>Wireframe</span>

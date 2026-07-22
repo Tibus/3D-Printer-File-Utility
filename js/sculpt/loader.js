@@ -20,6 +20,7 @@ import { displayMaterial } from './display.js';
 import { state } from './state.js';
 import { setStatus, showLoading, refreshWireframe } from './ui.js';
 import { extractRig, addRiggedObject, disposeRig } from './rig.js';
+import { storeSymCenter } from './symmetry.js';
 
 // Patch prototypes three-mesh-bvh (idempotent)
 THREE.BufferGeometry.prototype.computeBoundsTree = computeBoundsTree;
@@ -337,6 +338,7 @@ export function createObject(geometry, material, label, reorder = true) {
 
   state.scene.add(mesh);
   state.objects.push(mesh);
+  storeSymCenter(mesh); // centre de la bbox d'origine (pour la symétrie locale)
   return mesh;
 }
 
@@ -571,6 +573,7 @@ export function buildRigMesh(sm, reorder = true) {
   wire.name = 'wireframe'; wire.frustumCulled = false; wire.visible = state.params.displayHelper;
   wire.bind(sm.skeleton, sm.bindMatrix);
   sm.add(wire);
+  storeSymCenter(sm); // centre de la bbox d'origine (symétrie locale)
 }
 
 // Convertit un rig POSÉ en mesh(es) statique(s) : on baake les positions MONDE skinnées (via

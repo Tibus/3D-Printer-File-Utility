@@ -50,7 +50,9 @@ export const state = {
     sizeFrac: 0.12,           // taille du brush en FRACTION d'écran (constante à l'écran, suit le zoom) — c'est ce que règle le slider
     intensity: 100,           // % (0..200), 100 = référence
     invert: false,            // remove au lieu d'add (pour 'draw')
-    symmetryX: false,
+    symmetry: { x: false, y: false, z: false }, // axes de symétrie actifs
+    symmetrySpace: 'local',   // 'local' (suit la rotation de l'objet) | 'world' ; miroir autour de l'origine de l'objet
+    symmetryShowPlanes: true, // afficher les plans de symétrie
     displayHelper: false,     // afficher le wireframe / bvh helper
     falloffHardness: 0.5,     // dureté du bord (0 = très doux, 1 = net)
     cutDetail: 10,            // finesse du retopo du cap (×10 cellules sur la diagonale)

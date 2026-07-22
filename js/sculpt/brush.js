@@ -9,6 +9,7 @@ import * as THREE from 'three';
 import { CONTAINED, INTERSECTED, NOT_INTERSECTED } from 'three-mesh-bvh';
 import { state } from './state.js';
 import { ensureMask, getMask, maskRecordTouch } from './mask.js';
+import { symmetryPoints } from './symmetry.js';
 
 const _raycaster = new THREE.Raycaster();
 _raycaster.firstHitOnly = true;
@@ -226,16 +227,12 @@ function collectInSphere(localCenter, radius) {
 
 export function performStroke(worldPoint, opts = {}) {
   if (!state.targetMesh) return;
-  const { size, intensity, symmetryX } = state.params;
+  const { size, intensity } = state.params;
   const tool = opts.tool || state.params.tool;
   const invert = opts.invert !== undefined ? opts.invert : state.params.invert;
 
   applyStrokeAt(worldPoint, size, tool, intensity, invert);
-
-  if (symmetryX) {
-    _tempVec.set(-worldPoint.x, worldPoint.y, worldPoint.z);
-    applyStrokeAt(_tempVec, size, tool, intensity, invert);
-  }
+  for (const mp of symmetryPoints(worldPoint)) applyStrokeAt(mp, size, tool, intensity, invert); // miroirs (X/Y/Z, local/world)
 }
 
 const _range = { min: Infinity, max: -1 };

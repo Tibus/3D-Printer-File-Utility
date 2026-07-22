@@ -3,6 +3,7 @@
 import * as THREE from 'three';
 import { state } from './state.js';
 import { initScene } from './scene.js';
+import { symmetryPoints, initSymmetryHelper, updateSymmetryHelper, updateSymmetryCursor, enterSymEdit, exitSymEdit, isSymEditing, symEditMesh, setSymGizmoMode, resetSymFrame } from './symmetry.js';
 import {
   loadModelFromFile, subdivideTarget, separateComponents, newScene,
   createObject, setActiveObject, setOnObjectsChanged,
@@ -63,6 +64,7 @@ function flashMesh(mesh, dur = 500) {
 }
 
 initScene();
+initSymmetryHelper(state.scene);
 initGizmo();
 warmupManifold(); // précharge le WASM du booléen (mode de découpe par défaut)
 state.alpha = makeSquareAlpha(); // forme du brush (défaut : carré)
@@ -115,8 +117,10 @@ function setMouseFromEvent(e) {
 }
 
 function modifiersFor(e) {
-  // Shift => lissage temporaire ; Alt (ou Ctrl/Cmd) => inverser l'outil courant
-  // (draw retire, inflate dégonfle, pinch écarte, masque démasque, etc.)
+  // Bascule temporaire d'outil active (Shift=smooth / Ctrl=masque). Ctrl seul = ajoute ; Ctrl+Alt = inverse
+  // (démasque). On n'utilise pas Ctrl lui-même comme modificateur d'inversion (c'est le déclencheur).
+  if (_tempTool) return e.altKey ? { invert: true } : {};
+  // Sinon, en cours de stroke : Shift => lissage ; Alt => inverser l'outil courant.
   if (e.shiftKey) return { tool: 'smooth' };
   if (e.altKey || e.ctrlKey || e.metaKey) return { invert: !state.params.invert };
   return {};
@@ -132,14 +136,13 @@ const MAX_STAMPS = 10; // garde-fou sur un grand saut de curseur
 const _ls = { x: 0, y: 0, z: 0, has: false };
 
 // Un « coup » à la position p : sculpt géométrique OU peinture de couleur (Vertex Paint).
-const _vpMirror = new THREE.Vector3();
 function strokeStamp(p, mods) {
   syncBrushRadius(p); // rayon monde effectif = fraction d'écran au point du coup (taille écran constante)
   if (state.params.tool === 'vertexpaint') {
     const mesh = state.targetMesh; if (!mesh) return;
     const pal = getPalette(mesh), c = pal[_vpSel]; if (!c) return;
     paintColorAt(p, c.r, c.g, c.b);
-    if (state.params.symmetryX) { _vpMirror.set(-p.x, p.y, p.z); paintColorAt(_vpMirror, c.r, c.g, c.b); }
+    for (const mp of symmetryPoints(p)) paintColorAt(mp, c.r, c.g, c.b); // symétrie X/Y/Z (local/world)
     return;
   }
   performStroke(p, mods);
@@ -474,8 +477,12 @@ restoreAutosave();
 // ---------- Événements pointeur ----------
 
 dom.addEventListener('pointerdown', (e) => {
-  if (e.button !== 0 || !state.targetMesh || !state.targetMesh.visible) return;
+  // Bouton gauche uniquement, SAUF en masque temporaire (Ctrl) où Mac mappe le clic sur « bouton 2 » -> on l'accepte.
+  // En Shift (smooth temp), le clic droit doit tourner la caméra -> on ne l'accepte PAS ici.
+  const ctrlTemp = _tempTool && _tempTool.key === 'Control';
+  if ((e.button !== 0 && !ctrlTemp) || !state.targetMesh || !state.targetMesh.visible) return;
   if (isRenderMode()) return; // mode Rendu : preview, pas d'édition (l'orbite reste dispo)
+  if (isSymEditing()) return; // édition du plan de symétrie : seul le gizmo est actif
   if (radiusMode) return; // réglage du rayon en cours (X maintenu)
   if (state.params.tool === 'gizmo' || state.params.tool === 'retexture' || state.params.tool === 'other' || state.params.tool === 'bones') return; // pas de sculpt
   if (state.params.tool === 'split') { startLasso(e); return; }
@@ -577,7 +584,7 @@ function endStroke(e) {
   sculpting = false;
   _ls.has = false;
   setSculptResolution(false);
-  state.controls.enabled = true;
+  state.controls.enabled = !(_tempTool && _tempTool.key === 'Control'); // seul le masque temp (Ctrl) garde l'orbite OFF ; en Shift on doit pouvoir tourner (clic droit)
   endGrab();
   if (state.params.tool === 'mask') {
     if (state.targetMesh) rebuildMask(state.targetMesh.geometry); // applique le flou en fin de stroke
@@ -1687,6 +1694,50 @@ setHistoryListener((cu, cr) => { undoBtn.disabled = !cu; redoBtn.disabled = !cr;
 
 // Brosses de sculpt (partagent les mêmes options de brush : taille, intensité, dureté…).
 const SCULPT_TOOLS = new Set(['draw', 'smooth', 'flatten', 'inflate', 'pinch', 'crease', 'move']);
+
+// --- Bascule temporaire d'outil en maintenant une touche : Shift => Smooth, Ctrl/Cmd => Masque.
+// On bascule VRAIMENT l'outil (état + menu + panneau) via le clic du bouton, puis on rétablit au relâchement.
+let _tempTool = null; // { key, prevTool }
+const toolBtnFor = (name) => document.querySelector(`.tool-btn[data-tool="${name}"]`);
+function activateTempTool(name, key) {
+  if (_tempTool || sculpting || isRenderMode()) return;      // pas pendant un stroke / en Rendu
+  if (!SCULPT_TOOLS.has(state.params.tool)) return;          // seulement depuis une brosse de sculpt
+  const btn = toolBtnFor(name); if (!btn) return;
+  _tempTool = { key, prevTool: state.params.tool };
+  if (name === 'mask') state.controls.enabled = false; // Mac : Ctrl+clic = clic droit -> couperait l'orbite/pan ; on peint à la place
+  btn.click();
+}
+function restoreTempTool(key) {
+  if (!_tempTool || _tempTool.key !== key) return;
+  const prev = _tempTool.prevTool; _tempTool = null;
+  const btn = toolBtnFor(prev); if (btn) btn.click();
+  if (!sculpting) state.controls.enabled = true; // rétablit l'orbite
+}
+window.addEventListener('keydown', (e) => {
+  if (e.repeat) return;
+  const t = e.target; if (t && /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName)) return;
+  // NB : Shift+clic droit tourne la caméra nativement (OrbitControls inverse pan<->rotate quand Shift est tenu ;
+  // le bouton droit = pan par défaut -> Shift+droit = rotation). Ne pas remapper mouseButtons (ça ré-inverserait).
+  if (e.key === 'Shift') activateTempTool('smooth', 'Shift');
+  else if (e.key === 'Control') activateTempTool('mask', 'Control'); // Ctrl seul (pas Cmd -> pas de conflit avec Cmd+Z sur Mac)
+});
+window.addEventListener('keyup', (e) => {
+  if (e.key === 'Shift') restoreTempTool('Shift');
+  else if (e.key === 'Control') restoreTempTool('Control');
+});
+window.addEventListener('blur', () => { if (_tempTool) restoreTempTool(_tempTool.key); }); // sécurité si une touche « coince »
+
+// Panneau de droite : sur Mac, Ctrl+clic = clic droit -> sans ça, le menu contextuel s'ouvre et le bouton
+// ne s'active pas. On empêche le menu ET on déclenche le bouton visé, pour pouvoir garder Ctrl (masque)
+// tout en cliquant Inverser/Effacer/Annuler…
+{
+  const panel = document.getElementById('tool-panel');
+  if (panel) panel.addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+    const el = e.target.closest('button, .control-btn, label.file-input-label');
+    if (el && !el.disabled) el.click();
+  });
+}
 // Affiche/masque chaque option selon l'outil courant : un élément [data-tools] liste les outils
 // auxquels il s'applique (token exact, ou l'alias « sculpt » = toutes les brosses de sculpt).
 // Les éléments sans data-tools (undo/redo, affichage, wireframe, objets, export) restent visibles.
@@ -2364,9 +2415,45 @@ bindSlider('size-range', 'size-num', 'sizeFrac', (v) => v.toFixed(3)); // le sli
 document.getElementById('invert-check').addEventListener('change', (e) => {
   state.params.invert = e.target.checked;
 });
-document.getElementById('symmetry-check').addEventListener('change', (e) => {
-  state.params.symmetryX = e.target.checked;
-});
+{
+  const LS = 'sculpt-symmetry';
+  try { const s = JSON.parse(localStorage.getItem(LS) || 'null'); if (s) { if (s.symmetry) Object.assign(state.params.symmetry, s.symmetry); if (s.space) state.params.symmetrySpace = s.space; if (s.planes !== undefined) state.params.symmetryShowPlanes = s.planes; } } catch (_) { /* corrompu */ }
+  const save = () => { try { localStorage.setItem(LS, JSON.stringify({ symmetry: state.params.symmetry, space: state.params.symmetrySpace, planes: state.params.symmetryShowPlanes })); } catch (_) { /* quota/privé */ } };
+  document.querySelectorAll('.sym-axis').forEach((b) => {
+    const ax = b.dataset.axis;
+    b.classList.toggle('active', !!state.params.symmetry[ax]);
+    b.addEventListener('click', () => { state.params.symmetry[ax] = !state.params.symmetry[ax]; b.classList.toggle('active', state.params.symmetry[ax]); save(); });
+  });
+  const spaceBtns = document.querySelectorAll('.sym-space button');
+  spaceBtns.forEach((b) => {
+    b.classList.toggle('active', b.dataset.space === state.params.symmetrySpace);
+    b.addEventListener('click', () => { state.params.symmetrySpace = b.dataset.space; spaceBtns.forEach((x) => x.classList.toggle('active', x === b)); save(); });
+  });
+  const planesBtn = document.getElementById('sym-planes');
+  if (planesBtn) {
+    planesBtn.classList.toggle('active', state.params.symmetryShowPlanes);
+    planesBtn.addEventListener('click', () => { state.params.symmetryShowPlanes = !state.params.symmetryShowPlanes; planesBtn.classList.toggle('active', state.params.symmetryShowPlanes); save(); });
+  }
+  // Édition du plan de symétrie local (gizmo). Uniquement en espace Local, sur l'objet actif.
+  const editBtn = document.getElementById('sym-edit'), editTools = document.getElementById('sym-edit-tools');
+  const syncSymEditUI = () => { const on = isSymEditing(); if (editBtn) editBtn.classList.toggle('active', on); if (editTools) editTools.style.display = on ? 'flex' : 'none'; };
+  window.exitSymEditUI = () => { if (isSymEditing()) { exitSymEdit(); syncSymEditUI(); } }; // appelé quand on quitte le sculpt
+  if (editBtn) editBtn.addEventListener('click', () => {
+    if (isSymEditing()) { exitSymEdit(); }
+    else {
+      if (state.params.symmetrySpace !== 'local') { setStatus('Édition du plan : passe d’abord en symétrie « Local ».'); return; }
+      if (!state.targetMesh) return;
+      enterSymEdit(state.targetMesh); setSymGizmoMode('translate');
+      const t = editTools && editTools.querySelector('[data-symgz="translate"]'); editTools && editTools.querySelectorAll('[data-symgz]').forEach((x) => x.classList.toggle('active', x === t));
+    }
+    syncSymEditUI();
+  });
+  if (editTools) editTools.querySelectorAll('[data-symgz]').forEach((b) => b.addEventListener('click', () => {
+    setSymGizmoMode(b.dataset.symgz); editTools.querySelectorAll('[data-symgz]').forEach((x) => x.classList.toggle('active', x === b));
+  }));
+  const resetBtn = document.getElementById('sym-reset');
+  if (resetBtn) resetBtn.addEventListener('click', () => { if (state.targetMesh) resetSymFrame(state.targetMesh); });
+}
 document.getElementById('wireframe-check').addEventListener('change', (e) => {
   state.params.displayHelper = e.target.checked;
   refreshWireframe();
@@ -2445,6 +2532,9 @@ function animate() {
   updateRigs(); // met à jour les mixers d'animation des objets riggés en lecture
   if (isPoseActive()) updatePoseMarkers(); // les marqueurs d'os suivent la pose
   if (state.params.tool === 'bones') updateBonesTimeUI(); // scrub/temps suivent la lecture
+  { const symActive = !isRenderMode() && (SCULPT_TOOLS.has(state.params.tool) || state.params.tool === 'vertexpaint' || state.params.tool === 'mask');
+    if (isSymEditing() && (!symActive || state.params.symmetrySpace !== 'local' || state.targetMesh !== symEditMesh())) window.exitSymEditUI && window.exitSymEditUI();
+    updateSymmetryHelper(symActive); updateSymmetryCursor(symActive); } // plans + curseurs miroir
 
   const now = performance.now();
   const frame = now - perf.lastT;

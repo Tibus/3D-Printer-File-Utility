@@ -151,7 +151,7 @@ body.dragging {
 .tool-grid {
     display: grid;
     grid-template-columns: 1fr 1fr;
-    gap: 8px;
+    gap: 4px;
 }
 
 .tool-btn {
@@ -159,7 +159,7 @@ body.dragging {
     align-items: center;
     justify-content: center;
     gap: 6px;
-    padding: 10px 6px;
+    padding: 6px 3px;
     border: 1px solid #3a3a63;
     border-radius: 8px;
     background: #26264a;
@@ -329,6 +329,29 @@ body.dragging {
     opacity: 0.4;
     cursor: default;
 }
+
+/* Symétrie : boutons d'axes colorés + bascule Local/Monde */
+.sym-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 5px;}
+.sym-axes { display: flex; gap: 4px; }
+.sym-axis {
+    width: 30px; height: 28px; border: none; border-radius: 6px;
+    background: #33334f; color: #b9bad0; font-size: 12px; font-weight: 700; cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+}
+.sym-axis:hover { background: #3d3d60; }
+.sym-axis.active { color: #fff; }
+.sym-axis.active[data-axis="x"] { background: #ff5566; }
+.sym-axis.active[data-axis="y"] { background: #3fbf5f; }
+.sym-axis.active[data-axis="z"] { background: #4a86ff; }
+.sym-space { display: flex; margin-left: auto; border-radius: 6px; overflow: hidden; }
+.sym-space button {
+    border: none; background: #33334f; color: #b9bad0; padding: 6px 12px; font-size: 11px; cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+}
+.sym-space button:hover:not(.active) { background: #3d3d60; }
+.sym-space button.active { background: #6c8cff; color: #fff; }
+#sym-planes { margin-left: 4px; }
+#sym-planes.active { background: #6c8cff; color: #fff; }
 
 /* Modes Bones (Pose / Weight paint) : groupe façon boutons radio -> on voit le mode actif */
 #bones-pose,
