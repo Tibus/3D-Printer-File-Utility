@@ -109,6 +109,12 @@
             </svg>
             PNG
           </button>
+          <button class="btn-viewer" id="exportTurntableBtn" style="display: none;" title="Export a 360° turntable as animated WebP">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/>
+            </svg>
+            360
+          </button>
           <button class="btn-viewer" id="exportPreviewObjBtn" style="display: none;">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"/>
@@ -168,6 +174,28 @@
             <input type="range" id="fdmContaminationSlider" min="0" max="1" step="0.05" value="0.3">
             <span class="setting-value" id="fdmContaminationValue">0.30</span>
           </div>
+          <div class="viewer-setting-divider"></div>
+          <div class="viewer-setting-row">
+            <label>Turntable Frames</label>
+            <input type="range" id="turntableFramesSlider" min="8" max="120" step="1" value="36">
+            <span class="setting-value" id="turntableFramesValue">36 f</span>
+          </div>
+          <div class="viewer-setting-row">
+            <label>Turntable FPS</label>
+            <input type="range" id="turntableFpsSlider" min="5" max="60" step="1" value="20">
+            <span class="setting-value" id="turntableFpsValue">20 fps</span>
+          </div>
+          <div class="viewer-setting-row">
+            <label>Turntable Width</label>
+            <input type="range" id="turntableWidthSlider" min="256" max="1920" step="32" value="800">
+            <span class="setting-value" id="turntableWidthValue">800 px</span>
+          </div>
+          <div class="viewer-setting-row">
+            <label>Turntable Quality</label>
+            <input type="range" id="turntableQualitySlider" min="0.5" max="1" step="0.05" value="0.9">
+            <span class="setting-value" id="turntableQualityValue">0.90</span>
+          </div>
+          <div class="viewer-setting-divider"></div>
           <div class="viewer-setting-row">
             <label>Rotation</label>
             <div class="rotation-buttons">
@@ -210,6 +238,7 @@
   <script src="js/export.js"></script>
   <script src="js/textureQuantization.js"></script>
   <script src="js/texturePreview.js"></script>
+  <script src="js/webpAnimEncoder.js"></script>
   <script src="js/viewer3D.js"></script>
   <script src="js/colorPicker.js"></script>
   <script src="js/pickedPalette.js"></script>

@@ -20,9 +20,16 @@ function getFileType(filename) {
 
 function showViewerPngExport(baseName) {
   const pngBtn = document.getElementById('exportPreviewPngBtn');
-  if (!pngBtn) return;
-  pngBtn.style.display = 'flex';
-  pngBtn.onclick = () => exportViewerPNG(baseName);
+  if (pngBtn) {
+    pngBtn.style.display = 'flex';
+    pngBtn.onclick = () => exportViewerPNG(baseName);
+  }
+
+  const turntableBtn = document.getElementById('exportTurntableBtn');
+  if (turntableBtn) {
+    turntableBtn.style.display = 'flex';
+    turntableBtn.onclick = () => exportViewerTurntableWebP(baseName);
+  }
 }
 
 function stripExt(filename) {
@@ -79,6 +86,8 @@ function handleFile(file) {
   if (exportPreviewBtn) exportPreviewBtn.style.display = 'none';
   const exportPreviewPngBtn = document.getElementById('exportPreviewPngBtn');
   if (exportPreviewPngBtn) exportPreviewPngBtn.style.display = 'none';
+  const exportTurntableBtn = document.getElementById('exportTurntableBtn');
+  if (exportTurntableBtn) exportTurntableBtn.style.display = 'none';
 
   // Reset processed state
   processedOBJ = null;
@@ -251,14 +260,8 @@ function handleFile(file) {
           }
         }
 
-        // Always show PNG export for 3MF
-        const pngBtn = document.getElementById('exportPreviewPngBtn');
-        if (pngBtn) {
-          pngBtn.style.display = 'flex';
-          pngBtn.onclick = () => {
-            exportViewerPNG(baseName);
-          };
-        }
+        // Always show image exports for 3MF
+        showViewerPngExport(baseName);
       } catch (err) {
         console.error('Error parsing 3MF:', err);
         elements.fileStats.textContent = 'Error reading 3MF file: ' + err.message;

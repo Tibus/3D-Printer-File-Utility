@@ -3,6 +3,7 @@
 // ============================================================================
 
 const CAMERA_STORAGE_KEY = 'objColorClamper_cameraState';
+const TURNTABLE_DEFAULTS = { frames: 36, fps: 20, width: 800, quality: 0.9 };
 const VIEWER_SETTINGS_KEY = 'objColorClamper_viewerSettings';
 let cameraFitDistance = null; // distance computed by fitCameraToObject
 let cameraSaveTimer = null;
@@ -44,6 +45,10 @@ function saveViewerSettings() {
   const fdmLayerHeightSlider = document.getElementById('fdmLayerHeightSlider');
   const fdmLayerStrengthSlider = document.getElementById('fdmLayerStrengthSlider');
   const fdmContaminationSlider = document.getElementById('fdmContaminationSlider');
+  const turntableFramesSlider = document.getElementById('turntableFramesSlider');
+  const turntableFpsSlider = document.getElementById('turntableFpsSlider');
+  const turntableWidthSlider = document.getElementById('turntableWidthSlider');
+  const turntableQualitySlider = document.getElementById('turntableQualitySlider');
   const settings = {
     aoEnabled: viewer3D.aoEnabled,
     shadowEnabled: viewer3D.shadowEnabled,
@@ -59,6 +64,10 @@ function saveViewerSettings() {
     fdmLayerHeight: fdmLayerHeightSlider ? parseFloat(fdmLayerHeightSlider.value) : 0.2,
     fdmLayerStrength: fdmLayerStrengthSlider ? parseFloat(fdmLayerStrengthSlider.value) : 0.5,
     fdmContamination: fdmContaminationSlider ? parseFloat(fdmContaminationSlider.value) : 0.3,
+    turntableFrames: turntableFramesSlider ? parseInt(turntableFramesSlider.value, 10) : TURNTABLE_DEFAULTS.frames,
+    turntableFps: turntableFpsSlider ? parseInt(turntableFpsSlider.value, 10) : TURNTABLE_DEFAULTS.fps,
+    turntableWidth: turntableWidthSlider ? parseInt(turntableWidthSlider.value, 10) : TURNTABLE_DEFAULTS.width,
+    turntableQuality: turntableQualitySlider ? parseFloat(turntableQualitySlider.value) : TURNTABLE_DEFAULTS.quality,
   };
   try {
     localStorage.setItem(VIEWER_SETTINGS_KEY, JSON.stringify(settings));
@@ -593,8 +602,9 @@ function renderAOPipeline(viewer, background) {
 
   if (!background && viewer.shadowEnabled && viewer.groundPlane && viewer.mesh) {
     // PNG export path: render model to RT, shadow to RT, then composite
-    // Step 3a: FXAA → modelRT (write to the RT that FXAA is NOT reading from)
-    const modelRT = viewer.aoEnabled ? viewer.beautyRT : viewer.aoRT;
+    // Step 3a: FXAA → modelRT. FXAA reads aoRT (or fdmRT), so beautyRT is always
+    // the safe destination — its contents were consumed by the AO pass already.
+    const modelRT = viewer.beautyRT;
     r.setRenderTarget(modelRT);
     r.setClearColor(0x000000, 0);
     r.clear();
@@ -1209,6 +1219,24 @@ function initViewer3D(containerId) {
     });
   }
 
+  // Turntable sliders (frames / fps / width / quality)
+  function initTurntableSlider(sliderId, valueId, key, format) {
+    const slider = document.getElementById(sliderId);
+    const valueEl = document.getElementById(valueId);
+    if (!slider) return;
+    if (savedSettings && savedSettings[key] != null) slider.value = savedSettings[key];
+    const render = () => { if (valueEl) valueEl.textContent = format(parseFloat(slider.value)); };
+    render();
+    slider.addEventListener('input', () => {
+      render();
+      saveViewerSettingsDebounced();
+    });
+  }
+  initTurntableSlider('turntableFramesSlider', 'turntableFramesValue', 'turntableFrames', v => `${v} f`);
+  initTurntableSlider('turntableFpsSlider', 'turntableFpsValue', 'turntableFps', v => `${v} fps`);
+  initTurntableSlider('turntableWidthSlider', 'turntableWidthValue', 'turntableWidth', v => `${v} px`);
+  initTurntableSlider('turntableQualitySlider', 'turntableQualityValue', 'turntableQuality', v => v.toFixed(2));
+
   // Settings panel toggle
   const toggleSettingsBtn = document.getElementById('toggleSettingsBtn');
   const settingsPanel = document.getElementById('viewerSettings');
@@ -1478,21 +1506,15 @@ function getViewerCamera() {
   return viewer3D.camera;
 }
 
-async function exportViewerPNG(baseName) {
-  if (!viewer3D.renderer || !viewer3D.scene || !viewer3D.camera) return;
-
-  // Render full pipeline with transparent background
-  renderAOPipeline(viewer3D, null);
-
-  // Capture blob immediately while the transparent frame is still on the canvas
-  const canvas = viewer3D.renderer.domElement;
-  const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
-
+/**
+ * Save a blob, using the File System Access API when available.
+ */
+async function saveViewerBlob(blob, filename, description, mimeType, extension) {
   if (window.showSaveFilePicker) {
     try {
       const handle = await window.showSaveFilePicker({
-        suggestedName: `${baseName}.png`,
-        types: [{ description: 'PNG Image', accept: { 'image/png': ['.png'] } }]
+        suggestedName: filename,
+        types: [{ description, accept: { [mimeType]: [extension] } }]
       });
       const writable = await handle.createWritable();
       await writable.write(blob);
@@ -1507,9 +1529,141 @@ async function exportViewerPNG(baseName) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = `${baseName}.png`;
+  a.download = filename;
   a.click();
   URL.revokeObjectURL(url);
+}
+
+async function exportViewerPNG(baseName) {
+  if (!viewer3D.renderer || !viewer3D.scene || !viewer3D.camera) return;
+
+  // Render full pipeline with transparent background
+  renderAOPipeline(viewer3D, null);
+
+  // Capture blob immediately while the transparent frame is still on the canvas
+  const canvas = viewer3D.renderer.domElement;
+  const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
+
+  await saveViewerBlob(blob, `${baseName}.png`, 'PNG Image', 'image/png', '.png');
+}
+
+// ============================================================================
+// Turntable Export (animated WebP)
+// ============================================================================
+
+let turntableExporting = false;
+
+function getTurntableSettings() {
+  const read = (id, fallback, parse) => {
+    const el = document.getElementById(id);
+    return el ? parse(el.value) : fallback;
+  };
+  const toInt = v => parseInt(v, 10);
+  return {
+    frames: Math.max(2, read('turntableFramesSlider', TURNTABLE_DEFAULTS.frames, toInt)),
+    fps: Math.max(1, read('turntableFpsSlider', TURNTABLE_DEFAULTS.fps, toInt)),
+    width: Math.max(64, read('turntableWidthSlider', TURNTABLE_DEFAULTS.width, toInt)),
+    quality: read('turntableQualitySlider', TURNTABLE_DEFAULTS.quality, parseFloat)
+  };
+}
+
+/**
+ * Render a full turn of the model around its vertical axis (model Z-up, which
+ * the viewer maps to world Y) and export it as an animated WebP.
+ * The model spins while lights and camera stay put, like a real turntable.
+ */
+async function exportViewerTurntableWebP(baseName) {
+  if (turntableExporting) return;
+  if (!viewer3D.renderer || !viewer3D.scene || !viewer3D.camera || !viewer3D.mesh) return;
+
+  if (typeof canEncodeWebP === 'function' && !(await canEncodeWebP())) {
+    alert('This browser cannot encode WebP images. Try Chrome, Edge or Firefox.');
+    return;
+  }
+
+  const { frames, fps, width, quality } = getTurntableSettings();
+  const delay = Math.round(1000 / fps);
+
+  const gl = viewer3D.renderer.domElement;
+  const outWidth = Math.round(width);
+  const outHeight = Math.max(1, Math.round(outWidth * gl.height / gl.width));
+  const grabCanvas = document.createElement('canvas');
+  grabCanvas.width = outWidth;
+  grabCanvas.height = outHeight;
+  const grabCtx = grabCanvas.getContext('2d');
+
+  const mesh = viewer3D.mesh;
+  const wireframe = viewer3D.wireframe;
+  const baseQuat = mesh.quaternion.clone();
+  const basePos = mesh.position.clone();
+  const wireQuat = wireframe ? wireframe.quaternion.clone() : null;
+  const wirePos = wireframe ? wireframe.position.clone() : null;
+
+  // Spin around the vertical axis through the model centre
+  const center = new THREE.Box3().setFromObject(mesh).getCenter(new THREE.Vector3());
+  const axis = new THREE.Vector3(0, 1, 0);
+  const spin = new THREE.Quaternion();
+  const offset = new THREE.Vector3();
+
+  function applySpin(object, quat, pos) {
+    object.quaternion.copy(spin).multiply(quat);
+    offset.copy(pos).sub(center).applyQuaternion(spin);
+    object.position.copy(center).add(offset);
+  }
+
+  // Pause the render loop so captured frames are not overwritten mid-capture
+  turntableExporting = true;
+  if (viewer3D.animationId) cancelAnimationFrame(viewer3D.animationId);
+  viewer3D.animationId = null;
+
+  try {
+    showLoader(`Rendering turntable 1/${frames}...`);
+    await new Promise(resolve => setTimeout(resolve, 0));
+
+    const webpFrames = [];
+    for (let i = 0; i < frames; i++) {
+      spin.setFromAxisAngle(axis, (i / frames) * Math.PI * 2);
+      applySpin(mesh, baseQuat, basePos);
+      if (wireframe) applySpin(wireframe, wireQuat, wirePos);
+
+      renderAOPipeline(viewer3D, null);
+      grabCtx.clearRect(0, 0, outWidth, outHeight);
+      grabCtx.drawImage(gl, 0, 0, outWidth, outHeight);
+
+      const frameBlob = await new Promise(resolve => grabCanvas.toBlob(resolve, 'image/webp', quality));
+      if (!frameBlob) throw new Error('WebP frame encoding failed');
+      webpFrames.push(frameBlob);
+
+      showLoader(`Rendering turntable ${i + 1}/${frames}...`);
+      await new Promise(resolve => setTimeout(resolve, 0));
+    }
+
+    showLoader('Assembling animation...');
+    const animated = await encodeAnimatedWebP(webpFrames, {
+      width: outWidth,
+      height: outHeight,
+      delay,
+      loop: 0
+    });
+
+    hideLoader();
+    await saveViewerBlob(animated, `${baseName}_turntable.webp`, 'Animated WebP', 'image/webp', '.webp');
+  } catch (err) {
+    console.error('Turntable export failed:', err);
+    hideLoader();
+    alert('Turntable export failed: ' + err.message);
+  } finally {
+    // Restore the model pose and resume the render loop
+    mesh.quaternion.copy(baseQuat);
+    mesh.position.copy(basePos);
+    if (wireframe) {
+      wireframe.quaternion.copy(wireQuat);
+      wireframe.position.copy(wirePos);
+    }
+    hideLoader();
+    turntableExporting = false;
+    if (!viewer3D.animationId) animate();
+  }
 }
 
 // ============================================================================

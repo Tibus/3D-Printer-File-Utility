@@ -77,7 +77,10 @@ Global state variables in `app.js`:
 
 The app is split into three HTML pages:
 - `index.html` - Landing page with links to viewer and converter
-- `viewer.html` - 3D file viewer with AO, shadows, and color adjustments
+- `viewer.html` - 3D file viewer with AO, shadows, and color adjustments. Exports a still PNG or a
+  360° turntable as an animated WebP (`exportViewerTurntableWebP` spins the model around the vertical
+  axis, captures one still WebP per frame, and `js/webpAnimEncoder.js` muxes them into an animated
+  RIFF container — container work only, no encoder dependency)
 - `converter.html` - Color conversion pipeline with palette selection, processing, and export
 
 Each page uses `data-page` attribute on `<body>` to control page-specific initialization in `main.js`.
