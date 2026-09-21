@@ -282,8 +282,8 @@ async function parse3MF(buffer) {
   // Try to load filament colors from project settings config
   const filamentColors = await parseProjectSettings(zip);
 
-  // Try to load per-part extruder assignments from model settings config
-  const partExtruderMap = await parseModelSettings(zip);
+  // Try to load per-part extruder assignments and part types from model settings config
+  const { partExtruderMap, skipPartIds, skipVolumeRanges } = await parseModelSettings(zip);
 
   // Find and parse all .model files in the archive
   const modelFiles = new Map();
@@ -315,8 +315,19 @@ async function parse3MF(buffer) {
     mainModelContent = modelFiles.values().next().value;
   }
 
-  return parseModelXML(mainModelContent, filamentColors, modelFiles, partExtruderMap);
+  return parseModelXML(mainModelContent, filamentColors, modelFiles, partExtruderMap, skipPartIds, skipVolumeRanges);
 }
+
+// Part subtypes written by Bambu Studio (ModelVolume::type_to_string).
+// Only normal_part is printed geometry; the others are helper volumes that
+// drive slicing (per-region settings, cuts, support hints) and must not show
+// up in the viewer.
+const PRINTABLE_PART_TYPE = 'normal_part';
+
+// PrusaSlicer keeps every volume of an object in one mesh and describes them as
+// triangle ranges in Slic3r_PE_model.config, with its own type names
+// (ModelPart / NegativeVolume / ParameterModifier / Support*).
+const PRINTABLE_VOLUME_TYPE = 'ModelPart';
 
 /**
  * Parse filament colors from Metadata/project_settings.config
@@ -383,6 +394,8 @@ async function parseProjectSettings(zip) {
  */
 async function parseModelSettings(zip) {
   const partExtruderMap = new Map();
+  const skipPartIds = new Set();
+  const skipVolumeRanges = new Map(); // objectId -> [[firstTriangle, lastTriangle], ...]
 
   // 1. Bambu Studio: model_settings.config with <part id="N"><metadata key="extruder" value="M"/>
   const bambuNames = [
@@ -402,6 +415,8 @@ async function parseModelSettings(zip) {
           const part = parts[i];
           const partId = part.getAttribute('id');
           if (!partId) continue;
+          const subtype = part.getAttribute('subtype');
+          if (subtype && subtype !== PRINTABLE_PART_TYPE) skipPartIds.add(partId);
           const metadatas = part.getElementsByTagName('metadata');
           for (let j = 0; j < metadatas.length; j++) {
             const meta = metadatas[j];
@@ -413,7 +428,7 @@ async function parseModelSettings(zip) {
             }
           }
         }
-        if (partExtruderMap.size > 0) return partExtruderMap;
+        if (partExtruderMap.size > 0 || skipPartIds.size > 0) return { partExtruderMap, skipPartIds, skipVolumeRanges };
       } catch (e) {
         console.warn('Failed to parse model_settings.config:', e);
       }
@@ -449,15 +464,35 @@ async function parseModelSettings(zip) {
               }
             }
           }
+
+          // Helper volumes: triangle ranges to leave out of the mesh
+          const volumes = obj.getElementsByTagName('volume');
+          const ranges = [];
+          for (let j = 0; j < volumes.length; j++) {
+            const vol = volumes[j];
+            const first = parseInt(vol.getAttribute('firstid'));
+            const last = parseInt(vol.getAttribute('lastid'));
+            if (isNaN(first) || isNaN(last)) continue;
+            let volumeType = null;
+            const volMetas = vol.getElementsByTagName('metadata');
+            for (let k = 0; k < volMetas.length; k++) {
+              if (volMetas[k].getAttribute('key') === 'volume_type') {
+                volumeType = volMetas[k].getAttribute('value');
+                break;
+              }
+            }
+            if (volumeType && volumeType !== PRINTABLE_VOLUME_TYPE) ranges.push([first, last]);
+          }
+          if (ranges.length) skipVolumeRanges.set(objId, ranges);
         }
-        if (partExtruderMap.size > 0) return partExtruderMap;
+        if (partExtruderMap.size > 0 || skipVolumeRanges.size > 0) return { partExtruderMap, skipPartIds, skipVolumeRanges };
       } catch (e) {
         console.warn('Failed to parse Slic3r_PE_model.config:', e);
       }
     }
   }
 
-  return partExtruderMap;
+  return { partExtruderMap, skipPartIds, skipVolumeRanges };
 }
 
 /**
@@ -466,9 +501,10 @@ async function parseModelSettings(zip) {
  * @param {Color[]} filamentColors - Filament colors from project settings
  * @param {Map<string,string>} modelFiles - All .model files keyed by path
  * @param {Map<string,number>} partExtruderMap - Per-part extruder assignments (partId -> 1-based extruder index)
+ * @param {Set<string>} skipPartIds - Parts that are not printed geometry (modifiers, negative volumes, support hints)
  * @returns {Object} { vertices, faces }
  */
-function parseModelXML(xmlContent, filamentColors = [], modelFiles = new Map(), partExtruderMap = new Map()) {
+function parseModelXML(xmlContent, filamentColors = [], modelFiles = new Map(), partExtruderMap = new Map(), skipPartIds = new Set(), skipVolumeRanges = new Map()) {
   const parser = new DOMParser();
   const doc = parser.parseFromString(xmlContent, 'application/xml');
   const ns = detect3MFNamespace(doc);
@@ -477,10 +513,19 @@ function parseModelXML(xmlContent, filamentColors = [], modelFiles = new Map(), 
   const colorMap = buildColorMap(doc, ns, filamentColors);
 
   // Parse all objects from this document into a lookup by ID
-  const objectsById = parseObjectsFromDoc(doc, ns, colorMap, filamentColors, partExtruderMap);
+  const objectsById = parseObjectsFromDoc(doc, ns, colorMap, filamentColors, partExtruderMap, skipPartIds, skipVolumeRanges);
 
   // Check if main model uses components referencing sub-models
-  const components = findComponents(doc, ns);
+  const allComponents = findComponents(doc, ns);
+  const components = allComponents.filter(c => !skipPartIds.has(c.objectid));
+  let skippedParts = allComponents.length - components.length;
+
+  // PrusaSlicer keeps helper volumes inside the object's own mesh, so they are
+  // dropped per triangle rather than per component — count them here.
+  for (const objId of objectsById.keys()) {
+    const ranges = skipVolumeRanges.get(objId);
+    if (ranges) skippedParts += ranges.length;
+  }
 
   if (components.length > 0 && modelFiles.size > 0) {
     // Parse referenced sub-model files and collect their objects
@@ -499,7 +544,7 @@ function parseModelXML(xmlContent, filamentColors = [], modelFiles = new Map(), 
           if (colorMap.size === 0) {
             for (const [k, v] of subColorMap) colorMap.set(k, v);
           }
-          const subObjects = parseObjectsFromDoc(subDoc, subNs, colorMap.size > 0 ? colorMap : subColorMap, filamentColors, partExtruderMap);
+          const subObjects = parseObjectsFromDoc(subDoc, subNs, colorMap.size > 0 ? colorMap : subColorMap, filamentColors, partExtruderMap, skipPartIds, skipVolumeRanges);
           for (const [id, obj] of subObjects) {
             subObjectsById.set(id, obj);
           }
@@ -509,7 +554,9 @@ function parseModelXML(xmlContent, filamentColors = [], modelFiles = new Map(), 
     }
 
     // Assemble model from components
-    return assembleFromComponents(components, objectsById, subObjectsById);
+    const assembled = assembleFromComponents(components, objectsById, subObjectsById);
+    assembled.skippedParts = skippedParts;
+    return assembled;
   }
 
   // No components - use objects directly from the main document
@@ -520,7 +567,9 @@ function parseModelXML(xmlContent, filamentColors = [], modelFiles = new Map(), 
   // Parse build items to get per-object transforms
   const buildItems = parseBuildItems(doc, ns);
 
-  return mergeObjects(objectsById, buildItems);
+  const merged = mergeObjects(objectsById, buildItems);
+  merged.skippedParts = skippedParts;
+  return merged;
 }
 
 /**
@@ -571,9 +620,10 @@ function buildColorMap(doc, ns, filamentColors) {
  * @param {Map} colorMap
  * @param {Color[]} filamentColors - Filament colors from project settings
  * @param {Map<string,number>} partExtruderMap - Per-part extruder assignments (partId -> 1-based extruder index)
+ * @param {Set<string>} skipPartIds - Parts that are not printed geometry (modifiers, negative volumes, support hints)
  * @returns {Map<string, {vertices: Array, faces: Array}>}
  */
-function parseObjectsFromDoc(doc, ns, colorMap, filamentColors = [], partExtruderMap = new Map()) {
+function parseObjectsFromDoc(doc, ns, colorMap, filamentColors = [], partExtruderMap = new Map(), skipPartIds = new Set(), skipVolumeRanges = new Map()) {
   const objects = ns === '' ? doc.getElementsByTagName('object') : doc.getElementsByTagNameNS(ns, 'object');
   const result = new Map();
 
@@ -583,6 +633,10 @@ function parseObjectsFromDoc(doc, ns, colorMap, filamentColors = [], partExtrude
     const obj = objects[objIdx];
     const objId = obj.getAttribute('id');
     if (!objId) continue;
+
+    // Modifiers, negative volumes and support hints are slicing helpers, not
+    // printed geometry — don't build a mesh for them.
+    if (skipPartIds.has(objId)) continue;
 
     // Determine per-object default color:
     // 1. Per-part extruder from model_settings.config (Bambu/Prusa style)
@@ -652,7 +706,18 @@ function parseObjectsFromDoc(doc, ns, colorMap, filamentColors = [], partExtrude
     // Shared midpoint cache across all triangles so adjacent subdivisions share vertices
     const sharedMidCache = new Map();
 
+    // Triangle ranges that belong to helper volumes (PrusaSlicer layout)
+    const skipRanges = skipVolumeRanges.get(objId) || null;
+    const isHelperTriangle = idx => {
+      if (!skipRanges) return false;
+      for (const [first, last] of skipRanges) {
+        if (idx >= first && idx <= last) return true;
+      }
+      return false;
+    };
+
     for (let i = 0; i < triangleEls.length; i++) {
+      if (isHelperTriangle(i)) continue;
       const t = triangleEls[i];
       const v1 = parseInt(t.getAttribute('v1')) || 0;
       const v2 = parseInt(t.getAttribute('v2')) || 0;

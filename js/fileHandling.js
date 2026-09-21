@@ -229,7 +229,11 @@ function handleFile(file) {
         const buffer = e.target.result;
         const parsed = await parse3MF(buffer);
 
-        elements.fileStats.textContent = `${parsed.vertices.length.toLocaleString()} vertices, ${parsed.faces.length.toLocaleString()} faces (3MF)`;
+        // Modifiers, negative volumes and support hints all land here
+        const skippedNote = parsed.skippedParts
+          ? `, ${parsed.skippedParts} helper part${parsed.skippedParts > 1 ? 's' : ''} hidden`
+          : '';
+        elements.fileStats.textContent = `${parsed.vertices.length.toLocaleString()} vertices, ${parsed.faces.length.toLocaleString()} faces (3MF)${skippedNote}`;
         elements.fileInfo.classList.add('show');
         if (elements.processBtn) elements.processBtn.disabled = false;
 
