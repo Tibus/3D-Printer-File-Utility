@@ -48,9 +48,13 @@ function expandMmuTriangle(vi0, vi1, vi2, hexStr, vertices, colorMap, objColor, 
   const newFaces = [];
   const newFaceColors = [];
   let pos = 0;
+  let truncated = false;   // ran out of nibbles: not a valid segmentation tree
+  let painted = false;     // at least one leaf carries a paint state
 
   // Use shared midpoint cache to ensure adjacent triangles share midpoint vertices
   const midCache = sharedMidCache || new Map();
+  const addedKeys = [];
+  const vertexCountBefore = vertices.length;
   function midpoint(a, b) {
     const key = Math.min(a, b) + '_' + Math.max(a, b);
     if (midCache.has(key)) return midCache.get(key);
@@ -62,6 +66,7 @@ function expandMmuTriangle(vi0, vi1, vi2, hexStr, vertices, colorMap, objColor, 
     const idx = vertices.length;
     vertices.push(mid);
     midCache.set(key, idx);
+    addedKeys.push(key);
     return idx;
   }
 
@@ -75,6 +80,7 @@ function expandMmuTriangle(vi0, vi1, vi2, hexStr, vertices, colorMap, objColor, 
   function walk(i0, i1, i2, depth) {
     if (pos >= nibbles.length || depth > 12) {
       // Fallback: treat as unpainted leaf
+      truncated = true;
       newFaces.push([i0, i1, i2]);
       newFaceColors.push(objColor || new Color(0.8, 0.8, 0.8, 'default'));
       return;
@@ -90,9 +96,17 @@ function expandMmuTriangle(vi0, vi1, vi2, hexStr, vertices, colorMap, objColor, 
       if (high < 3) {
         state = high;
       } else {
-        // Extended state
-        state = (pos < nibbles.length) ? nibbles[pos++] + 3 : 0;
+        // Extended state: the 0b11 marker is followed by 4-bit groups, each
+        // full group (0xF) meaning "+15, read another one" (see serialize()).
+        state = 3;
+        let group;
+        do {
+          if (pos >= nibbles.length) { truncated = true; break; }
+          group = nibbles[pos++];
+          state += group;
+        } while (group === 15);
       }
+      if (state > 0) painted = true;
       const color = stateToColor(state);
       newFaces.push([i0, i1, i2]);
       newFaceColors.push(color);
@@ -153,7 +167,19 @@ function expandMmuTriangle(vi0, vi1, vi2, hexStr, vertices, colorMap, objColor, 
   }
 
   walk(vi0, vi1, vi2, 0);
-  return { faces: newFaces, faceColors: newFaceColors };
+
+  // A well-formed tree consumes every nibble: the writer emits 4 or 8 bits per
+  // node, so a leftover (or a truncated walk) means this string is not a
+  // segmentation tree and the caller should fall back to a whole-face decode.
+  const valid = !truncated && pos === nibbles.length;
+  if (!valid) {
+    // Undo the midpoints this walk allocated: a string that is not a tree must
+    // not leave phantom vertices in the shared cache, or the T-junction pass
+    // would split neighbouring triangles against them.
+    for (const key of addedKeys) midCache.delete(key);
+    vertices.length = vertexCountBefore;
+  }
+  return { faces: newFaces, faceColors: newFaceColors, valid, painted };
 }
 
 /**
@@ -632,16 +658,22 @@ function parseObjectsFromDoc(doc, ns, colorMap, filamentColors = [], partExtrude
       const v2 = parseInt(t.getAttribute('v2')) || 0;
       const v3 = parseInt(t.getAttribute('v3')) || 0;
 
-      // Check for mmu_segmentation with subdivision data
+      // Check for mmu_segmentation data. The string length says nothing about
+      // whether the triangle is subdivided — a single split encodes in 3 chars,
+      // shorter than some whole-face values — so decode the tree and let it
+      // report whether it made sense of the string.
       const mmuSeg = getMmuSegmentationAttr(t);
-      if (mmuSeg && mmuSeg.length > 8) {
-        // Long hex string = subdivision tree, expand into sub-triangles
+      if (mmuSeg) {
         const expanded = expandMmuTriangle(v1, v2, v3, mmuSeg, vertices, colorMap, objColor, sharedMidCache);
-        for (let j = 0; j < expanded.faces.length; j++) {
-          faces.push(expanded.faces[j]);
-          faceColors.push(expanded.faceColors[j]);
+        if (expanded.valid && (expanded.painted || expanded.faces.length > 1)) {
+          for (let j = 0; j < expanded.faces.length; j++) {
+            faces.push(expanded.faces[j]);
+            faceColors.push(expanded.faceColors[j]);
+          }
+          continue;
         }
-        continue;
+        // Not a tree (or nothing painted): fall through to the flat decode,
+        // which also covers pid/p1 material colours.
       }
 
       let faceColor = getTriangleColor(t, colorMap);
