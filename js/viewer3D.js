@@ -3,7 +3,8 @@
 // ============================================================================
 
 const CAMERA_STORAGE_KEY = 'objColorClamper_cameraState';
-const TURNTABLE_DEFAULTS = { frames: 36, fps: 20, width: 800, quality: 0.9 };
+const TURNTABLE_DEFAULTS = { frames: 72, fps: 30, width: 800, quality: 0.9 };
+const VIEWER_SETTINGS_VERSION = 2;
 const VIEWER_SETTINGS_KEY = 'objColorClamper_viewerSettings';
 let cameraFitDistance = null; // distance computed by fitCameraToObject
 let cameraSaveTimer = null;
@@ -68,6 +69,7 @@ function saveViewerSettings() {
     turntableFps: turntableFpsSlider ? parseInt(turntableFpsSlider.value, 10) : TURNTABLE_DEFAULTS.fps,
     turntableWidth: turntableWidthSlider ? parseInt(turntableWidthSlider.value, 10) : TURNTABLE_DEFAULTS.width,
     turntableQuality: turntableQualitySlider ? parseFloat(turntableQualitySlider.value) : TURNTABLE_DEFAULTS.quality,
+    version: VIEWER_SETTINGS_VERSION,
   };
   try {
     localStorage.setItem(VIEWER_SETTINGS_KEY, JSON.stringify(settings));
@@ -82,7 +84,16 @@ function saveViewerSettingsDebounced() {
 function loadViewerSettings() {
   try {
     const stored = localStorage.getItem(VIEWER_SETTINGS_KEY);
-    return stored ? JSON.parse(stored) : null;
+    if (!stored) return null;
+    const settings = JSON.parse(stored);
+    // v2 raised the turntable defaults for smoother playback. Anything stored
+    // before that was persisted as a side effect of other settings, never
+    // picked by the user, so let the new defaults win.
+    if (settings.version !== VIEWER_SETTINGS_VERSION) {
+      delete settings.turntableFrames;
+      delete settings.turntableFps;
+    }
+    return settings;
   } catch {
     return null;
   }
@@ -1220,22 +1231,35 @@ function initViewer3D(containerId) {
   }
 
   // Turntable sliders (frames / fps / width / quality)
+  const turntableSliders = {};
+  function renderTurntableLabels() {
+    for (const entry of Object.values(turntableSliders)) {
+      if (entry.valueEl) entry.valueEl.textContent = entry.format(parseFloat(entry.slider.value));
+    }
+  }
   function initTurntableSlider(sliderId, valueId, key, format) {
     const slider = document.getElementById(sliderId);
-    const valueEl = document.getElementById(valueId);
     if (!slider) return;
     if (savedSettings && savedSettings[key] != null) slider.value = savedSettings[key];
-    const render = () => { if (valueEl) valueEl.textContent = format(parseFloat(slider.value)); };
-    render();
+    turntableSliders[key] = { slider, valueEl: document.getElementById(valueId), format };
     slider.addEventListener('input', () => {
-      render();
+      renderTurntableLabels();
       saveViewerSettingsDebounced();
     });
   }
-  initTurntableSlider('turntableFramesSlider', 'turntableFramesValue', 'turntableFrames', v => `${v} f`);
+  function turntableSliderValue(key, fallback) {
+    const entry = turntableSliders[key];
+    return entry ? parseFloat(entry.slider.value) : fallback;
+  }
+  // Frames and fps together decide how long one turn lasts — show it
+  initTurntableSlider('turntableFramesSlider', 'turntableFramesValue', 'turntableFrames', v => {
+    const fps = turntableSliderValue('turntableFps', TURNTABLE_DEFAULTS.fps);
+    return `${v} f \u00b7 ${(v / fps).toFixed(1)}s`;
+  });
   initTurntableSlider('turntableFpsSlider', 'turntableFpsValue', 'turntableFps', v => `${v} fps`);
   initTurntableSlider('turntableWidthSlider', 'turntableWidthValue', 'turntableWidth', v => `${v} px`);
   initTurntableSlider('turntableQualitySlider', 'turntableQualityValue', 'turntableQuality', v => v.toFixed(2));
+  renderTurntableLabels();
 
   // Settings panel toggle
   const toggleSettingsBtn = document.getElementById('toggleSettingsBtn');
