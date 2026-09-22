@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Render - 3D Printer File Utility</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body data-page="render">
+  <div class="container">
+    <header>
+      <a href="index.html" class="back-link">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M19 12H5M12 19l-7-7 7-7"/>
+        </svg>
+        Back
+      </a>
+      <h1>Path <span class="accent">Render</span></h1>
+      <p class="subtitle">GPU path tracing for product shots</p>
+    </header>
+
+    <!-- File Upload -->
+    <div class="card">
+      <h2>Upload</h2>
+      <div class="file-drop-zone" id="dropZone">
+        <div class="icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+            <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M17 8l-5-5-5 5M12 3v12"/>
+          </svg>
+        </div>
+        <div class="text">Drop your file here or <strong>click to browse</strong></div>
+        <div class="supported-formats">OBJ, STL, GLB, 3MF</div>
+        <input type="file" id="fileInput">
+      </div>
+      <div class="file-info" id="fileInfo">
+        <strong id="fileName"></strong><br>
+        <span id="fileStats"></span>
+      </div>
+    </div>
+
+    <!-- Render -->
+    <div class="card" id="renderCard" style="display: none;">
+      <h2>Render</h2>
+      <div class="viewer-wrapper">
+        <div id="renderContainer" class="viewer-container"></div>
+        <div class="viewer-buttons">
+          <button class="btn-viewer" id="fitBtn" title="Reframe the model">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/>
+            </svg>
+            Fit
+          </button>
+          <button class="btn-viewer" id="toggleSettingsBtn" title="Lighting settings">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/>
+            </svg>
+          </button>
+          <button class="btn-viewer" id="alphaBtn" title="Cut the model out on export: shadow becomes alpha, no floor">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M12 2a10 10 0 100 20z"/><circle cx="12" cy="12" r="10"/>
+            </svg>
+            Alpha
+          </button>
+          <button class="btn-viewer" id="exportPngBtn" title="Export the converged image">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/>
+            </svg>
+            PNG
+          </button>
+        </div>
+        <div class="viewer-settings" id="viewerSettings">
+          <div class="viewer-setting-row">
+            <label>Denoise</label>
+            <input type="range" id="denoiseSlider" min="0" max="1" step="0.05" value="0.6">
+            <span class="setting-value" id="denoiseValue">0.60</span>
+          </div>
+          <div class="viewer-setting-row">
+            <label>Exposure</label>
+            <input type="range" id="exposureSlider" min="0.2" max="2" step="0.05" value="1">
+            <span class="setting-value" id="exposureValue">1.00</span>
+          </div>
+          <div class="viewer-setting-row">
+            <label>Light Angle</label>
+            <input type="range" id="lightAzimuthSlider" min="0" max="360" step="5" value="145">
+            <span class="setting-value" id="lightAzimuthValue">145°</span>
+          </div>
+          <div class="viewer-setting-row">
+            <label>Light Height</label>
+            <input type="range" id="lightElevationSlider" min="5" max="89" step="1" value="40">
+            <span class="setting-value" id="lightElevationValue">40°</span>
+          </div>
+          <div class="viewer-setting-row">
+            <label>Shadow Blur</label>
+            <input type="range" id="shadowBlurSlider" min="0" max="1" step="0.05" value="0.35">
+            <span class="setting-value" id="shadowBlurValue">0.35</span>
+          </div>
+          <div class="viewer-setting-row">
+            <label>Global Light</label>
+            <input type="range" id="envIntensitySlider" min="0" max="0.95" step="0.05" value="0.3">
+            <span class="setting-value" id="envIntensityValue">0.30</span>
+          </div>
+          <div class="viewer-setting-row">
+            <label>Bounces</label>
+            <input type="range" id="bouncesSlider" min="1" max="8" step="1" value="3">
+            <span class="setting-value" id="bouncesValue">3</span>
+          </div>
+        </div>
+        <div class="render-progress" id="renderProgress">
+          <div class="render-progress-bar"><div id="renderProgressFill"></div></div>
+          <span id="renderProgressText">0 samples</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Loader Overlay -->
+  <div class="loader-overlay" id="loaderOverlay">
+    <div class="loader-content">
+      <div class="loader-spinner"></div>
+      <div class="loader-text" id="loaderText">Loading...</div>
+    </div>
+  </div>
+
+  <!-- Parsers: plain JS, no three dependency, shared with the rest of the app.
+       The ?v= tokens defeat the browser cache: a stale 3mfParser.js silently
+       drops per-triangle paint colours, which looks like "the model lost its
+       colours". Bump them when these files change. -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+  <script src="js/Color.js?v=1"></script>
+  <script src="js/objParser.js?v=1"></script>
+  <script src="js/stlParser.js?v=1"></script>
+  <script src="js/glbParser.js?v=1"></script>
+  <script src="js/3mfParser.js?v=1"></script>
+
+  <!-- Path tracer: three 0.180 ESM, only on this page -->
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/",
+      "three/examples/jsm/": "https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/",
+      "three-mesh-bvh": "https://cdn.jsdelivr.net/npm/three-mesh-bvh@0.9.15/build/index.module.js",
+      "three-gpu-pathtracer": "https://cdn.jsdelivr.net/npm/three-gpu-pathtracer@0.0.24/build/index.module.js"
+    }
+  }
+  </script>
+  <script type="module" src="js/pathRender.js?v=23"></script>
+  <script src="js/alphaCutout.js?v=1"></script>
+  <script src="js/renderPage.js?v=8"></script>
+</body>
+</html>

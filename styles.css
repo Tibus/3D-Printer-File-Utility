@@ -990,6 +990,7 @@ h1 .accent {
 }
 
 .viewer-container {
+  position: relative;   /* the path tracer's canvas is laid over the raster one */
   width: 100%;
   aspect-ratio: 1 / 1;
   border-radius: var(--radius-md);
@@ -1090,7 +1091,56 @@ h1 .accent {
   height: 100% !important;
 }
 
+/* The path tracer's canvas sits on top of the raster one in the same container;
+   only one of the two is ever visible. It takes no pointer events: OrbitControls
+   is bound to the raster canvas underneath, and that is what has to keep
+   receiving the drags in both modes. */
+.viewer-container canvas.raytrace-canvas {
+  position: absolute;
+  top: 0;
+  left: 0;
+  pointer-events: none;
+}
+
+.modal-note {
+  margin: 0 0 var(--space-md);
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
 /* Viewer Settings Panel */
+/* Render page: path tracing sample progress */
+.render-progress {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  pointer-events: none;
+}
+
+.render-progress-bar {
+  width: 90px;
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.2);
+  overflow: hidden;
+}
+
+.render-progress-bar > div {
+  height: 100%;
+  width: 0;
+  background: var(--accent-primary);
+  transition: width 0.2s linear;
+}
+
 .viewer-settings {
   display: none;
   position: absolute;

@@ -61,6 +61,10 @@
             <div></div><div></div><div></div>
           </div>
         </div>
+        <div class="render-progress" id="rtProgress" style="display:none">
+          <div class="render-progress-bar"><div id="rtProgressFill"></div></div>
+          <span id="rtProgressText">0 samples</span>
+        </div>
         <div class="viewer-buttons">
           <button class="btn-viewer active" id="toggleAoBtn" title="Toggle Ambient Occlusion">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -98,6 +102,18 @@
             </svg>
             Grid
           </button>
+          <button class="btn-viewer" id="toggleRaytraceBtn" title="Path-traced preview (slower, photographic)">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="4"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M19.1 4.9L17 7M7 17l-2.1 2.1"/>
+            </svg>
+            Ray
+          </button>
+          <button class="btn-viewer rt-only" id="toggleAlphaBtn" style="display:none" title="Cut the model out on export: transparent backdrop, shadow carried in the alpha">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M12 2a10 10 0 100 20z"/><circle cx="12" cy="12" r="10"/>
+            </svg>
+            Alpha
+          </button>
           <button class="btn-viewer" id="toggleSettingsBtn" title="Viewer Settings">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/>
@@ -123,37 +139,72 @@
           </button>
         </div>
         <div class="viewer-settings" id="viewerSettings">
-          <div class="viewer-setting-row">
+          <div class="viewer-setting-row rt-setting" style="display:none">
+            <label>Denoise</label>
+            <input type="range" id="denoiseSlider" min="0" max="1" step="0.05" value="0.6">
+            <span class="setting-value" id="denoiseValue">0.60</span>
+          </div>
+          <div class="viewer-setting-row rt-setting" style="display:none">
+            <label>Exposure</label>
+            <input type="range" id="exposureSlider" min="0.2" max="2" step="0.05" value="1">
+            <span class="setting-value" id="exposureValue">1.00</span>
+          </div>
+          <div class="viewer-setting-row rt-setting" style="display:none">
+            <label>Light Angle</label>
+            <input type="range" id="lightAzimuthSlider" min="0" max="360" step="5" value="145">
+            <span class="setting-value" id="lightAzimuthValue">145°</span>
+          </div>
+          <div class="viewer-setting-row rt-setting" style="display:none">
+            <label>Light Height</label>
+            <input type="range" id="lightElevationSlider" min="5" max="89" step="1" value="40">
+            <span class="setting-value" id="lightElevationValue">40°</span>
+          </div>
+          <div class="viewer-setting-row rt-setting" style="display:none">
+            <label>Shadow Blur</label>
+            <input type="range" id="shadowBlurSlider" min="0" max="1" step="0.05" value="0.35">
+            <span class="setting-value" id="shadowBlurValue">0.35</span>
+          </div>
+          <div class="viewer-setting-row rt-setting" style="display:none">
+            <label>Global Light</label>
+            <input type="range" id="envIntensitySlider" min="0" max="0.95" step="0.05" value="0.3">
+            <span class="setting-value" id="envIntensityValue">0.30</span>
+          </div>
+          <div class="viewer-setting-row rt-setting" style="display:none">
+            <label>Bounces</label>
+            <input type="range" id="bouncesSlider" min="1" max="8" step="1" value="3">
+            <span class="setting-value" id="bouncesValue">3</span>
+          </div>
+          <div class="viewer-setting-row raster-setting">
             <label>AO Strength</label>
             <input type="range" id="aoStrengthSlider" min="0" max="2" step="0.05" value="0.7">
             <span class="setting-value" id="aoStrengthValue">0.7</span>
           </div>
-          <div class="viewer-setting-row">
+          <div class="viewer-setting-row raster-setting">
             <label>Shadow Opacity</label>
             <input type="range" id="shadowOpacitySlider" min="0" max="0.5" step="0.01" value="0.12">
             <span class="setting-value" id="shadowOpacityValue">0.12</span>
           </div>
-          <div class="viewer-setting-row">
+          <div class="viewer-setting-row raster-setting">
             <label>Shadow Spread</label>
             <input type="range" id="shadowSpreadSlider" min="1" max="200" step="1" value="100">
             <span class="setting-value" id="shadowSpreadValue">100</span>
           </div>
-          <div class="viewer-setting-row">
+          <div class="viewer-setting-row raster-setting">
             <label>Brightness</label>
             <input type="range" id="brightnessSlider" min="0.5" max="2" step="0.05" value="1">
             <span class="setting-value" id="brightnessValue">1.00</span>
           </div>
-          <div class="viewer-setting-row">
+          <div class="viewer-setting-row raster-setting">
             <label>Contrast</label>
             <input type="range" id="contrastSlider" min="0.5" max="2" step="0.05" value="1">
             <span class="setting-value" id="contrastValue">1.00</span>
           </div>
-          <div class="viewer-setting-row">
+          <div class="viewer-setting-row raster-setting">
             <label>Saturation</label>
             <input type="range" id="saturationSlider" min="0" max="2" step="0.05" value="1">
             <span class="setting-value" id="saturationValue">1.00</span>
           </div>
-          <div class="viewer-setting-row">
+          <div class="viewer-setting-row raster-setting">
             <label>Temperature</label>
             <input type="range" id="temperatureSlider" min="-0.3" max="0.3" step="0.01" value="0">
             <span class="setting-value" id="temperatureValue">0.00</span>
@@ -218,6 +269,22 @@
   </div>
 
   <!-- Scripts -->
+  <!-- Raytraced turntable: how long to sit on each frame -->
+  <div class="modal-overlay" id="rtTurntableOverlay">
+    <div class="modal">
+      <h3>Raytraced turntable</h3>
+      <div class="modal-group">
+        <label for="rtSamplesInput">Samples per frame</label>
+        <input type="text" id="rtSamplesInput" value="32" inputmode="numeric">
+      </div>
+      <p class="modal-note" id="rtTurntableEstimate">Measuring...</p>
+      <div class="modal-buttons">
+        <button class="btn-secondary" id="rtTurntableCancel">Cancel</button>
+        <button class="btn-primary" id="rtTurntableConfirm">Export</button>
+      </div>
+    </div>
+  </div>
+
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
@@ -240,6 +307,24 @@
   <script src="js/texturePreview.js"></script>
   <script src="js/webpAnimEncoder.js"></script>
   <script src="js/viewer3D.js"></script>
+
+  <!-- Path tracer: its own three 0.180 as a module, next to the r128 global the
+       viewer uses. They never touch: the two renderers are fed the same parsed
+       model rather than sharing a scene. -->
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/",
+      "three/examples/jsm/": "https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/",
+      "three-mesh-bvh": "https://cdn.jsdelivr.net/npm/three-mesh-bvh@0.9.15/build/index.module.js",
+      "three-gpu-pathtracer": "https://cdn.jsdelivr.net/npm/three-gpu-pathtracer@0.0.24/build/index.module.js"
+    }
+  }
+  </script>
+  <script type="module" src="js/pathRender.js?v=23"></script>
+  <script src="js/alphaCutout.js?v=1"></script>
+  <script src="js/viewerRaytrace.js?v=7"></script>
   <script src="js/colorPicker.js"></script>
   <script src="js/pickedPalette.js"></script>
   <script src="js/processing.js"></script>

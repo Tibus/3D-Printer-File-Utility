@@ -19,16 +19,25 @@ function getFileType(filename) {
 }
 
 function showViewerPngExport(baseName) {
+  // Both exports follow whichever renderer is on screen: grabbing the raster
+  // image while the traced one is showing would hand back something the user
+  // never asked for.
+  const raytracing = () => typeof RaytraceMode !== 'undefined' && RaytraceMode.isActive();
+
   const pngBtn = document.getElementById('exportPreviewPngBtn');
   if (pngBtn) {
     pngBtn.style.display = 'flex';
-    pngBtn.onclick = () => exportViewerPNG(baseName);
+    pngBtn.onclick = () => (raytracing() ? RaytraceMode.exportPNG(baseName) : exportViewerPNG(baseName));
   }
 
   const turntableBtn = document.getElementById('exportTurntableBtn');
   if (turntableBtn) {
     turntableBtn.style.display = 'flex';
-    turntableBtn.onclick = () => exportViewerTurntableWebP(baseName);
+    turntableBtn.onclick = () => {
+      // A traced turn costs minutes, not seconds, so it asks before committing
+      if (raytracing()) window.openRaytraceTurntableModal(baseName);
+      else exportViewerTurntableWebP(baseName);
+    };
   }
 }
 

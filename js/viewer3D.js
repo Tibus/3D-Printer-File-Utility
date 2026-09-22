@@ -417,8 +417,11 @@ function setupAOPipeline(viewer, containerId, opts = {}) {
 
   // Add OrbitControls
   viewer.controls = new THREE.OrbitControls(viewer.camera, viewer.renderer.domElement);
-  viewer.controls.enableDamping = true;
-  viewer.controls.dampingFactor = 0.05;
+  // No inertia. It coasted for a long time after every drag, and since an
+  // OrbitControls damping settles asymptotically the camera never quite stopped
+  // — which kept the path tracer restarting its accumulation frame after frame,
+  // so in raytracing mode the image never got anywhere.
+  viewer.controls.enableDamping = false;
   if (opts.saveCameraOnChange) {
     viewer.controls.addEventListener('change', saveCameraStateDebounced);
   }
@@ -688,9 +691,11 @@ function renderAOPipeline(viewer, background) {
 function loadModelToAOViewer(viewer, vertices, faces, faceColors) {
   if (!viewer.scene) return;
 
-  // Store for raycasting
+  // Store for raycasting, and for the path tracer, which is fed the same data
+  // rather than sharing this scene
   viewer.vertices = vertices;
   viewer.faces = faces;
+  viewer.faceColors = faceColors;
 
   // Remove existing mesh
   if (viewer.mesh) {
@@ -1420,6 +1425,7 @@ function initViewer3D(containerId) {
   document.getElementById('rotateX')?.addEventListener('click', () => {
     if (!viewer3D.mesh) return;
     viewer3D.mesh.rotation.x += halfPi;
+    if (typeof RaytraceMode !== 'undefined') RaytraceMode.onModelRotated();
     syncWireframeRotation(viewer3D);
     updateGroundAndShadowForViewer(viewer3D);
     if (processViewer3D.mesh) {
@@ -1431,6 +1437,7 @@ function initViewer3D(containerId) {
   document.getElementById('rotateY')?.addEventListener('click', () => {
     if (!viewer3D.mesh) return;
     viewer3D.mesh.rotation.y += halfPi;
+    if (typeof RaytraceMode !== 'undefined') RaytraceMode.onModelRotated();
     syncWireframeRotation(viewer3D);
     updateGroundAndShadowForViewer(viewer3D);
     if (processViewer3D.mesh) {
@@ -1442,6 +1449,7 @@ function initViewer3D(containerId) {
   document.getElementById('rotateZ')?.addEventListener('click', () => {
     if (!viewer3D.mesh) return;
     viewer3D.mesh.rotation.z += halfPi;
+    if (typeof RaytraceMode !== 'undefined') RaytraceMode.onModelRotated();
     syncWireframeRotation(viewer3D);
     updateGroundAndShadowForViewer(viewer3D);
     if (processViewer3D.mesh) {
@@ -1471,6 +1479,10 @@ function animate() {
     viewer3D.controls.update();
   }
 
+  // The path tracer owns the canvas in raytracing mode; controls still run above
+  // so its camera keeps following them
+  if (typeof RaytraceMode !== 'undefined' && RaytraceMode.isActive()) return;
+
   if (viewer3D.beautyRT && viewer3D.renderer && viewer3D.scene && viewer3D.camera) {
     renderAOPipeline(viewer3D, viewer3D.scene.background);
   } else if (viewer3D.renderer && viewer3D.scene && viewer3D.camera) {
@@ -1484,6 +1496,8 @@ function onViewerResize() {
 
 function loadModelToViewer(vertices, faces, faceColors) {
   loadModelToAOViewer(viewer3D, vertices, faces, faceColors);
+  // whatever the tracer built for the previous file is now wrong
+  if (typeof RaytraceMode !== 'undefined') RaytraceMode.onModelLoaded();
 
   // Show tab bar and switch to viewer tab
   const tabBar = document.getElementById('tabBar');
